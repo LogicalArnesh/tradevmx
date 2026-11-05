@@ -286,6 +286,10 @@ class Settings:
     email_min_severity: int = 4
     alert_cooldown_minutes: int = 45
 
+    # desktop experience
+    desktop_toast: bool = True
+    voice_alerts: bool = False
+
     # schedule
     eod_wrap_time: time = time(15, 40)
     opening_brief_time: time = time(9, 16)
@@ -329,6 +333,8 @@ class Settings:
             alert_min_severity=min(5, max(1, _env_int("ALERT_MIN_SEVERITY", 3))),
             email_min_severity=min(5, max(1, _env_int("EMAIL_MIN_SEVERITY", 4))),
             alert_cooldown_minutes=max(0, _env_int("ALERT_COOLDOWN_MINUTES", 45)),
+            desktop_toast=_env_bool("DESKTOP_TOAST", True),
+            voice_alerts=_env_bool("VOICE_ALERTS", False),
             eod_wrap_time=_env_time("EOD_WRAP_TIME", time(15, 40)),
             opening_brief_time=_env_time("OPENING_BRIEF_TIME", time(9, 16)),
             market_holidays=_env_dates("MARKET_HOLIDAYS"),
@@ -476,6 +482,8 @@ class Settings:
             "confirm_timeframe": self.confirm_timeframe,
             "min_risk_reward": self.min_risk_reward,
             "alert_min_severity": self.alert_min_severity,
+            "desktop_toast": self.desktop_toast,
+            "voice_alerts": self.voice_alerts,
             "market_holidays": len(self.market_holidays),
         }
 

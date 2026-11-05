@@ -43,7 +43,13 @@ ai_engine.py        Groq client, JSON plan parsing, risk-contract enforcement,
 report_engine.py    ReportLab A4 research note (path + in-memory buffer)
 alerts.py           Telegram send_message / send_document, Gmail SMTP with
                     attachments, de-duplication, HTML formatting
-bot.py              python-telegram-bot v20+ app + APScheduler jobs
+app.py              local Flask console + JSON API (loopback, token-guarded)
+desktop.py          launcher: free port, browser, clean shutdown
+sentinel.py         shared APScheduler engine: sweeps, brief, EOD, event bus
+settings_store.py   .env form schema, validation, atomic writes, secret masks
+notify.py           optional desktop toasts / voice (plyer, pyttsx3)
+web/                dashboard UI (vanilla HTML/CSS/JS, no build step)
+bot.py              Telegram front-end over the same sentinel engine
 tests/              offline suite (synthetic OHLC, no network, no creds)
 ```
 
@@ -76,6 +82,8 @@ Then:
 ```bash
 .venv/bin/python bot.py
 ```
+
+Prefer a GUI? Section 7 gives you the same engine in one local window.
 
 ## 4. Commands
 
@@ -123,7 +131,47 @@ report so the reasoning is auditable.
 * **Long-running** — run under systemd (`Restart=always`) or a process manager;
   one long-polling bot instance per token only.
 
-## 7. Run it 24/7
+## 7. Desktop console (recommended on your PC)
+
+This is the Jarvis-style cockpit: one local window with every feature, and your
+API keys editable inside the app.
+
+```bash
+python desktop.py                       # or double-click run_tradexvm.bat
+                                        # macOS/Linux: ./run_tradexvm.sh
+```
+
+The launcher starts the console on `http://127.0.0.1:8765` (it moves to the next
+free port if that one is taken), opens your browser, and shuts the desk down when
+you close the window.
+
+| Panel | What it does |
+|---|---|
+| **Dashboard** | IST clock and market phase, Arm/Disarm sentinel, Scan now, live tape (CMP, change, bias, VWAP distance, signal chips), signal feed, one-click PDF per symbol. |
+| **Configuration** | Every key and threshold as a form. Secrets are masked and never leave the machine; **Send test** verifies Telegram, Gmail and Groq independently; saving rewrites `.env` atomically and reloads the engine without a restart. |
+| **Activity** | Tail of `logs/tradexvm.log`. |
+
+Everything is local: the server binds `127.0.0.1`, every launch generates a
+random token that all mutating requests must present, cross-origin POSTs are
+refused, and the page runs under a strict Content-Security-Policy. Secrets are
+never sent back to the browser - only a short mask.
+
+Optional extras, not installed by default and safe to skip:
+
+```bash
+.venv/bin/pip install plyer pyttsx3     # Windows: .venv\Scripts\pip.exe install plyer pyttsx3
+```
+
+Then enable *Desktop toasts* / *Voice announcements* in Configuration. Without
+those packages the toggles simply stay silent; the in-app feed and Telegram
+alerts are unaffected.
+
+**Everyday flow:** open the app -> Configuration, paste the Telegram token and
+chat ids (optionally Gmail + Groq) -> **Send test** on each channel -> **Save** ->
+**Arm sentinel**. Leave the window open during market hours; it sweeps every 15
+minutes and notifies you only when a setup qualifies.
+
+## 8. Run it 24/7
 
 The desk only works while it is awake, and a sleeping laptop silently misses
 sweeps. Put it on any always-on Linux box — one vCPU and 1 GB RAM is plenty.
@@ -169,7 +217,7 @@ Run exactly **one** bot process per token — Telegram permits a single
 long-polling consumer, so two instances will steal updates from each other.
 After a code change: `git pull && sudo systemctl restart tradexvm`.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -180,8 +228,12 @@ After a code change: `git pull && sudo systemctl restart tradexvm`.
 | Alerts never fire | No setup reached `ALERT_MIN_SEVERITY`, or the same setup is inside its `ALERT_COOLDOWN_MINUTES` window. Run `/scan`. |
 | Every snapshot flagged stale | Market is closed (weekend/holiday/pre-open), or a provider is delayed. The PDF states which session the data belongs to. |
 | `TATAMOTORS.NS` returns no rows | Ticker changed after the demerger; replace it in `WATCHLIST` (the default now uses `MARUTI.NS`). |
+| Console will not open | The launcher prints the real URL; if the port is taken it silently moves to the next free one. Or pass `--port 8770`. |
+| "could not write .env" when saving | The project folder is read-only (common under `Program Files`). Move it to your home folder. |
+| No toasts or voice | Optional extras are missing: `pip install plyer pyttsx3`, then save and re-arm. |
+| Settings save says "validation failed" | The offending input is highlighted; chat ids must be numeric, emails valid, holidays `YYYY-MM-DD`, severities 1-5. |
 
-## 9. Known limits
+## 10. Known limits
 
 * Yahoo intraday data is delayed (~15 min on many symbols); the nsepython
   overlay is used when available, but NSE endpoints rate-limit aggressively and
