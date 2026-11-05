@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # TradeVMx :: publish this folder to your own GitHub account.
 #
-#   ./push-to-github.sh              # creates/updates <you>/tradevmx
+#   ./push-to-github.sh              # creates/updates <you>/tradevmx (public)
 #   ./push-to-github.sh my-desk      # custom repository name
+#   PRIVATE=1 ./push-to-github.sh    # private repo (no downloads for others,
+#                                    # and the in-app update check goes silent)
 #
 # The token is read silently (never echoed, never written to disk, never in
 # shell history) and handed to `gh` on stdin. Requires the GitHub CLI:
@@ -34,9 +36,12 @@ fi
 LOGIN="$(gh api user --jq .login)"
 echo "[TradeVMx] Signed in as $LOGIN"
 
+VISIBILITY="--public"
+[ "${PRIVATE:-0}" = "1" ] && VISIBILITY="--private"
+
 if ! gh repo view "$LOGIN/$REPO" >/dev/null 2>&1; then
-  echo "[TradeVMx] Creating the private repository $REPO..."
-  gh repo create "$REPO" --private --description "$DESCRIPTION"
+  echo "[TradeVMx] Creating the repository $REPO $VISIBILITY..."
+  gh repo create "$REPO" "$VISIBILITY" --description "$DESCRIPTION"
 fi
 
 echo "[TradeVMx] Pushing branches and tags..."
