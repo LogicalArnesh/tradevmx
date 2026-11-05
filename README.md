@@ -207,6 +207,13 @@ suite on every push.
 Updating by hand is dropping the new files over the old folder: `.env`, `logs/`
 and `reports/` are not part of the bundle, so your keys and history survive.
 
+**Publish your own copy.** With the [GitHub CLI](https://cli.github.com) installed,
+run `./push-to-github.sh` (or `./push-to-github.sh my-desk` for a different repo
+name). It asks for a token with `repo` scope using a hidden prompt — nothing is
+echoed or stored — creates the private repository, pushes `main` and the tags,
+sets the repository description and topics, and points `UPDATE_REPO` at it. The
+pushed `vX.Y.Z` tag then builds the downloadable release.
+
 ## 9. Run it 24/7
 
 The desk only works while it is awake, and a sleeping laptop silently misses
