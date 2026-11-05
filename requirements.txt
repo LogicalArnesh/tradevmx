@@ -16,8 +16,15 @@ apscheduler>=3.10,<4.0
 # LLM intelligence engine
 groq>=0.9
 
+# Local desktop console
+flask>=3.0
+
 # Environment + tooling
 python-dotenv>=1.0
+
+# Optional desktop extras (safe to skip):
+#   pip install plyer pyttsx3
+#   plyer  -> native toasts; pyttsx3 -> spoken alert headlines
 
 # Test suite (optional, dev only)
 pytest>=8.0

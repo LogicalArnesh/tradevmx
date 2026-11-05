@@ -19,6 +19,7 @@ import mimetypes
 import smtplib
 import ssl
 import time as _time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from html import escape
@@ -76,15 +77,36 @@ class TelegramChannel:
 
     @property
     def ready(self) -> bool:
-        return self._bot is not None and bool(self.settings.telegram_chat_ids)
+        return bool(self.settings.telegram_chat_ids) and bool(
+            self._bot or self.settings.telegram_bot_token
+        )
 
-    async def _send_one(self, chat_id: int, text: str) -> bool:
+    @asynccontextmanager
+    async def _session(self) -> Any:
+        """Yield a usable Bot: the injected PTB bot, or a short-lived one.
+
+        The desktop app owns no ``Application``, so it borrows a standalone
+        ``Bot`` per broadcast and lets PTB initialise/shutdown it.
+        """
+        if self._bot is not None:
+            yield self._bot
+            return
+        token = self.settings.telegram_bot_token
+        if not token:
+            yield None
+            return
+        from telegram import Bot
+
+        async with Bot(token=token) as owned:
+            yield owned
+
+    async def _send_one(self, bot: Any, chat_id: int, text: str) -> bool:
         from telegram.constants import ParseMode
         from telegram.error import RetryAfter, TelegramError
 
         for attempt in range(1, 4):
             try:
-                await self._bot.send_message(
+                await bot.send_message(
                     chat_id=chat_id,
                     text=_clip(text),
                     parse_mode=ParseMode.HTML,
@@ -107,14 +129,17 @@ class TelegramChannel:
 
     async def broadcast(self, text: str) -> int:
         """Send to every configured chat; returns the success count."""
-        if not self.ready:
-            LOGGER.debug("Telegram channel not ready; skipping broadcast.")
+        if not self.settings.telegram_chat_ids:
             return 0
-        results = await asyncio.gather(
-            *(self._send_one(chat_id, text) for chat_id in self.settings.telegram_chat_ids),
-            return_exceptions=True,
-        )
-        return sum(1 for r in results if r is True)
+        async with self._session() as bot:
+            if bot is None:
+                LOGGER.debug("Telegram channel not ready; skipping broadcast.")
+                return 0
+            results = await asyncio.gather(
+                *(self._send_one(bot, chat_id, text) for chat_id in self.settings.telegram_chat_ids),
+                return_exceptions=True,
+            )
+            return sum(1 for r in results if r is True)
 
     async def send_document(
         self,
@@ -125,11 +150,11 @@ class TelegramChannel:
         chat_id: int | None = None,
     ) -> int:
         """Deliver a PDF (bytes or path) to one chat or all configured chats."""
-        if self._bot is None:
-            return 0
         from telegram.error import TelegramError
 
         targets = (chat_id,) if chat_id is not None else self.settings.telegram_chat_ids
+        if not targets:
+            return 0
         if isinstance(document, Path):
             try:
                 payload: bytes | Any = document.read_bytes()
@@ -139,28 +164,31 @@ class TelegramChannel:
         else:
             payload = document
 
-        sent = 0
-        for target in targets:
-            for attempt in range(1, 3):
-                try:
-                    await self._bot.send_document(
-                        chat_id=target,
-                        document=payload,
-                        filename=filename,
-                        caption=_clip(caption, TELEGRAM_CAPTION_LIMIT) if caption else None,
-                        parse_mode="HTML",
-                    )
-                    sent += 1
-                    break
-                except TelegramError as exc:
-                    LOGGER.warning(
-                        "send_document failed (chat %s, attempt %s/2): %s", target, attempt, exc
-                    )
-                    await asyncio.sleep(1.5 * attempt)
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.exception("Unexpected send_document error: %s", exc)
-                    break
-        return sent
+        async with self._session() as bot:
+            if bot is None:
+                return 0
+            sent = 0
+            for target in targets:
+                for attempt in range(1, 3):
+                    try:
+                        await bot.send_document(
+                            chat_id=target,
+                            document=payload,
+                            filename=filename,
+                            caption=_clip(caption, TELEGRAM_CAPTION_LIMIT) if caption else None,
+                            parse_mode="HTML",
+                        )
+                        sent += 1
+                        break
+                    except TelegramError as exc:
+                        LOGGER.warning(
+                            "send_document failed (chat %s, attempt %s/2): %s", target, attempt, exc
+                        )
+                        await asyncio.sleep(1.5 * attempt)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.exception("Unexpected send_document error: %s", exc)
+                        break
+            return sent
 
 
 # ---------------------------------------------------------------------------
