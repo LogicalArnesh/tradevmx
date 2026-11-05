@@ -1,4 +1,4 @@
-"""TradeXVm :: Groq intelligence engine.
+"""TradeVMx :: Groq intelligence engine.
 
 Turns a :class:`market_scanner.MarketSnapshot` into a disciplined institutional
 trade plan (entry zone, invalidation, T1/T2, R:R) and enforces the desk's

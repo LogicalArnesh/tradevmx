@@ -47,7 +47,7 @@ def test_check_treats_missing_release_as_normal(monkeypatch) -> None:
         raise urllib.error.HTTPError("https://api.github.com", 404, "Not Found", {}, None)
 
     monkeypatch.setattr(updater, "_fetch", boom)
-    payload = updater.check("someone/tradexvm", "1.0.0")
+    payload = updater.check("someone/tradevmx", "1.0.0")
     assert payload["available"] is False
     assert payload["latest"] is None
     assert "no releases" in str(payload["error"])
@@ -58,7 +58,7 @@ def test_check_survives_offline(monkeypatch) -> None:
         raise urllib.error.URLError("name resolution failed")
 
     monkeypatch.setattr(updater, "_fetch", offline)
-    payload = updater.check("someone/tradexvm", "1.0.0")
+    payload = updater.check("someone/tradevmx", "1.0.0")
     assert payload["available"] is False
     assert "GitHub" in str(payload["error"])
 
@@ -69,12 +69,12 @@ def test_check_reports_a_newer_release(monkeypatch) -> None:
         "_fetch",
         lambda repo, timeout: {
             "tag_name": "v1.1.0",
-            "html_url": "https://github.com/someone/tradexvm/releases/tag/v1.1.0",
+            "html_url": "https://github.com/someone/tradevmx/releases/tag/v1.1.0",
             "published_at": "2026-02-01T10:00:00Z",
             "body": "Faster sweeps.",
         },
     )
-    payload = updater.check("someone/tradexvm", "1.0.0")
+    payload = updater.check("someone/tradevmx", "1.0.0")
     assert payload["available"] is True
     assert payload["latest"] == "v1.1.0"
     assert payload["url"].endswith("v1.1.0")
@@ -85,7 +85,7 @@ def test_check_does_not_offer_the_current_version(monkeypatch) -> None:
     monkeypatch.setattr(
         updater, "_fetch", lambda repo, timeout: {"tag_name": "v1.0.0", "html_url": "u"}
     )
-    payload = updater.check("someone/tradexvm", "1.0.0")
+    payload = updater.check("someone/tradevmx", "1.0.0")
     assert payload["available"] is False
 
 

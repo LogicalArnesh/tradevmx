@@ -1,4 +1,4 @@
-# TradeXVm
+# TradeVMx
 
 An autonomous, Jarvis-style market desk for Indian markets (NSE/BSE, NIFTY 50,
 BANK NIFTY and liquid large caps). It watches the tape on two timeframes, finds
@@ -15,9 +15,9 @@ on demand                  /live /report /scan /status /wrap
 
 > Research tooling. Not investment advice. Paper-trade it before risking capital.
 
-**Getting it:** download `tradexvm-X.Y.Z.zip` from the Releases page of this
-repository, unzip it, and double-click `run_tradexvm.bat` (Windows) or run
-`./run_tradexvm.sh` (macOS/Linux). Licensed under the [MIT License](LICENSE).
+**Getting it:** download `tradevmx-X.Y.Z.zip` from the Releases page of this
+repository, unzip it, and double-click `run_tradevmx.bat` (Windows) or run
+`./run_tradevmx.sh` (macOS/Linux). Licensed under the [MIT License](LICENSE).
 
 ---
 
@@ -132,7 +132,7 @@ report so the reasoning is auditable.
   warning is printed in the PDF and the alert footer.
 * **Startup guard** — `bot.py` exits with code 2 and a clear log line when
   `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_IDS` is missing.
-* **Logs** — console + `logs/tradexvm.log` (5 MB × 5 rotations).
+* **Logs** — console + `logs/tradevmx.log` (5 MB × 5 rotations).
 * **Reports** — written to `reports/` and also held in memory for Telegram.
 * **Tests** — `.venv/bin/python -m pytest tests -q` (offline, no credentials).
 * **Long-running** — run under systemd (`Restart=always`) or a process manager;
@@ -144,8 +144,8 @@ This is the Jarvis-style cockpit: one local window with every feature, and your
 API keys editable inside the app.
 
 ```bash
-python desktop.py                       # or double-click run_tradexvm.bat
-                                        # macOS/Linux: ./run_tradexvm.sh
+python desktop.py                       # or double-click run_tradevmx.bat
+                                        # macOS/Linux: ./run_tradevmx.sh
 ```
 
 The launcher starts the console on `http://127.0.0.1:8765` (it moves to the next
@@ -156,7 +156,7 @@ you close the window.
 |---|---|
 | **Dashboard** | IST clock and market phase, Arm/Disarm sentinel, Scan now, live tape (CMP, change, bias, VWAP distance, signal chips), signal feed, one-click PDF per symbol. |
 | **Configuration** | Every key and threshold as a form. Secrets are masked and never leave the machine; **Send test** verifies Telegram, Gmail and Groq independently; saving rewrites `.env` atomically and reloads the engine without a restart. |
-| **Activity** | Tail of `logs/tradexvm.log`. |
+| **Activity** | Tail of `logs/tradevmx.log`. |
 
 Everything is local: the server binds `127.0.0.1`, every launch generates a
 random token that all mutating requests must present, cross-origin POSTs are
@@ -223,26 +223,26 @@ headless, and arms the sentinel on boot because `AUTO_ARM=true`. Open
 ```bash
 # on the server
 sudo apt update && sudo apt install -y python3-venv git
-git clone <your-repo-url> tradexvm && cd tradexvm
+git clone <your-repo-url> tradevmx && cd tradevmx
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && nano .env          # fill in credentials
 .venv/bin/python bot.py                    # smoke test, then Ctrl-C
 ```
 
-`/etc/systemd/system/tradexvm.service`:
+`/etc/systemd/system/tradevmx.service`:
 
 ```ini
 [Unit]
-Description=TradeXVm market desk
+Description=TradeVMx market desk
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=tradexvm
-WorkingDirectory=/home/tradexvm/tradexvm
+User=tradevmx
+WorkingDirectory=/home/tradevmx/tradevmx
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/tradexvm/tradexvm/.venv/bin/python bot.py
+ExecStart=/home/tradevmx/tradevmx/.venv/bin/python bot.py
 Restart=always
 RestartSec=10
 
@@ -251,15 +251,15 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo useradd -m -s /bin/bash tradexvm     # skip if the user exists
+sudo useradd -m -s /bin/bash tradevmx     # skip if the user exists
 sudo systemctl daemon-reload
-sudo systemctl enable --now tradexvm
-journalctl -u tradexvm -f                 # live logs
+sudo systemctl enable --now tradevmx
+journalctl -u tradevmx -f                 # live logs
 ```
 
 Run exactly **one** bot process per token — Telegram permits a single
 long-polling consumer, so two instances will steal updates from each other.
-After a code change: `git pull && sudo systemctl restart tradexvm`.
+After a code change: `git pull && sudo systemctl restart tradevmx`.
 
 ## 10. Troubleshooting
 
@@ -267,7 +267,7 @@ After a code change: `git pull && sudo systemctl restart tradexvm`.
 |---|---|
 | `bot.py` exits with code 2 | `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_IDS` missing — see the log line naming both. |
 | Commands answer "Not authorised" | That chat id is not in `TELEGRAM_CHAT_IDS`. Add it (negative for groups) and restart. |
-| No email arrives | `GMAIL_APP_PASSWORD` is not a 16-character App Password, or `ENABLE_EMAIL=false`. Check `logs/tradexvm.log` for the SMTP error. |
+| No email arrives | `GMAIL_APP_PASSWORD` is not a 16-character App Password, or `ENABLE_EMAIL=false`. Check `logs/tradevmx.log` for the SMTP error. |
 | PDF renders but the verdict says "rule engine" | No `GROQ_API_KEY`, or Groq rejected the call — the deterministic ATR plan is being used. |
 | Alerts never fire | No setup reached `ALERT_MIN_SEVERITY`, or the same setup is inside its `ALERT_COOLDOWN_MINUTES` window. Run `/scan`. |
 | Every snapshot flagged stale | Market is closed (weekend/holiday/pre-open), or a provider is delayed. The PDF states which session the data belongs to. |
@@ -277,7 +277,7 @@ After a code change: `git pull && sudo systemctl restart tradexvm`.
 | No toasts or voice | Optional extras are missing: `pip install plyer pyttsx3`, then save and re-arm. |
 | Settings save says "validation failed" | The offending input is highlighted; chat ids must be numeric, emails valid, holidays `YYYY-MM-DD`, severities 1-5. |
 | No update banner ever appears | `UPDATE_REPO` is empty, or that repo has no published release yet. Set `owner/repo` and push a `vX.Y.Z` tag. |
-| Autostart does nothing | Windows: `schtasks /Query /TN TradeXVm`. Linux: `systemctl --user status tradexvm`. Re-run the installer as the same user that owns the folder. |
+| Autostart does nothing | Windows: `schtasks /Query /TN TradeVMx`. Linux: `systemctl --user status tradevmx`. Re-run the installer as the same user that owns the folder. |
 | It never arms by itself | `AUTO_ARM=false`, or a `.env` copied from an older version without the key. Open Configuration once and save. |
 
 ## 11. Known limits

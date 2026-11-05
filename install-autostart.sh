@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TradeXVm :: start the desk automatically at login.
+# TradeVMx :: start the desk automatically at login.
 #   Linux  -> systemd user unit (restarts on failure)
 #   macOS  -> LaunchAgent (restarts on exit)
 # The desk runs headless with --no-browser; open http://127.0.0.1:8765 yourself.
@@ -10,21 +10,21 @@ DIR="$(pwd)"
 PY="$DIR/.venv/bin/python"
 
 if [ ! -x "$PY" ]; then
-  echo "[TradeXVm] Run ./run_tradexvm.sh once first - it creates the environment." >&2
+  echo "[TradeVMx] Run ./run_tradevmx.sh once first - it creates the environment." >&2
   exit 1
 fi
 
 mkdir -p "$DIR/logs"
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  PLIST="$HOME/Library/LaunchAgents/com.tradexvm.desk.plist"
+  PLIST="$HOME/Library/LaunchAgents/com.tradevmx.desk.plist"
   mkdir -p "$(dirname "$PLIST")"
   cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.tradexvm.desk</string>
+  <key>Label</key><string>com.tradevmx.desk</string>
   <key>ProgramArguments</key>
   <array>
     <string>$PY</string>
@@ -41,16 +41,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
 EOF
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
-  echo "[TradeXVm] Installed $PLIST"
-  echo "[TradeXVm] It starts at login and restarts if it dies. Console: http://127.0.0.1:8765"
+  echo "[TradeVMx] Installed $PLIST"
+  echo "[TradeVMx] It starts at login and restarts if it dies. Console: http://127.0.0.1:8765"
   exit 0
 fi
 
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
-cat > "$UNIT_DIR/tradexvm.service" <<EOF
+cat > "$UNIT_DIR/tradevmx.service" <<EOF
 [Unit]
-Description=TradeXVm NSE market desk
+Description=TradeVMx NSE market desk
 After=network-online.target
 
 [Service]
@@ -64,11 +64,11 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now tradexvm.service
+systemctl --user enable --now tradevmx.service
 # Keep the desk alive even when you are not logged in graphically.
 loginctl enable-linger "$USER" 2>/dev/null || true
 
-echo "[TradeXVm] Enabled tradexvm.service"
-echo "[TradeXVm] Status:  systemctl --user status tradexvm"
-echo "[TradeXVm] Logs:    journalctl --user -u tradexvm -f"
-echo "[TradeXVm] Remove:  systemctl --user disable --now tradexvm"
+echo "[TradeVMx] Enabled tradevmx.service"
+echo "[TradeVMx] Status:  systemctl --user status tradevmx"
+echo "[TradeVMx] Logs:    journalctl --user -u tradevmx -f"
+echo "[TradeVMx] Remove:  systemctl --user disable --now tradevmx"

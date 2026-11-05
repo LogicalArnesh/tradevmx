@@ -156,8 +156,8 @@ def test_index_renders_with_token(client) -> None:
     response = client.get("/")
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert 'meta name="tradexvm-token" content="test-token"' in body
-    assert "TRADEXVM" in body
+    assert 'meta name="tradevmx-token" content="test-token"' in body
+    assert "TRADEVMX" in body
     assert "Content-Security-Policy" in response.headers
 
 
@@ -177,7 +177,7 @@ def test_state_endpoint_shape(client, desk) -> None:
 def test_mutations_require_token(client) -> None:
     assert client.post("/api/scan", json={}).status_code == 401
     assert client.post(
-        "/api/sentinel", json={"action": "start"}, headers={"X-TradeXVm-Token": "wrong"}
+        "/api/sentinel", json={"action": "start"}, headers={"X-TradeVMx-Token": "wrong"}
     ).status_code == 401
     # A foreign Origin is refused before the token is even considered.
     assert client.post(
@@ -192,7 +192,7 @@ def test_cross_origin_is_rejected(client, desk) -> None:
     response = client.post(
         "/api/sentinel",
         json={"action": "start"},
-        headers={"X-TradeXVm-Token": "test-token", "Origin": "http://evil.example"},
+        headers={"X-TradeVMx-Token": "test-token", "Origin": "http://evil.example"},
     )
     assert response.status_code == 403
 
@@ -200,14 +200,14 @@ def test_cross_origin_is_rejected(client, desk) -> None:
 def test_sentinel_start_stop(client, desk) -> None:
     desk.sentinel.cycle_intraday = lambda: 0  # no network sweep during tests
     started = client.post(
-        "/api/sentinel", json={"action": "start"}, headers={"X-TradeXVm-Token": "test-token"}
+        "/api/sentinel", json={"action": "start"}, headers={"X-TradeVMx-Token": "test-token"}
     )
     assert started.status_code == 200
     assert started.get_json()["running"] is True
     assert started.get_json()["state"]["sentinel"]["schedule"]
 
     stopped = client.post(
-        "/api/sentinel", json={"action": "stop"}, headers={"X-TradeXVm-Token": "test-token"}
+        "/api/sentinel", json={"action": "stop"}, headers={"X-TradeVMx-Token": "test-token"}
     )
     assert stopped.status_code == 200
     assert stopped.get_json()["running"] is False
@@ -222,7 +222,7 @@ def test_scan_endpoint_uses_sentinel(client, desk) -> None:
         return report
 
     desk.sentinel.scan = fake_scan
-    response = client.post("/api/scan", json={"force": True}, headers={"X-TradeXVm-Token": "test-token"})
+    response = client.post("/api/scan", json={"force": True}, headers={"X-TradeVMx-Token": "test-token"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["scanned"] == 1
@@ -234,7 +234,7 @@ def test_settings_save_writes_env_and_reloads(client, desk, env_file) -> None:
     response = client.post(
         "/api/settings",
         json={"values": {"SCAN_INTERVAL_MINUTES": "20", "ALERT_MIN_SEVERITY": "4"}},
-        headers={"X-TradeXVm-Token": "test-token"},
+        headers={"X-TradeVMx-Token": "test-token"},
     )
     assert response.status_code == 200
     saved = env_file.read_text(encoding="utf-8")
@@ -249,7 +249,7 @@ def test_settings_save_rejects_invalid_values(client, env_file) -> None:
     response = client.post(
         "/api/settings",
         json={"values": {"ALERT_MIN_SEVERITY": "42"}},
-        headers={"X-TradeXVm-Token": "test-token"},
+        headers={"X-TradeVMx-Token": "test-token"},
     )
     assert response.status_code == 400
     assert "fields" in response.get_json()
@@ -297,7 +297,7 @@ def test_setup_flag_is_hidden_but_writable(client, env_file) -> None:
     response = client.post(
         "/api/settings",
         json={"values": {"SETUP_DONE": True}},
-        headers={"X-TradeXVm-Token": "test-token"},
+        headers={"X-TradeVMx-Token": "test-token"},
     )
     assert response.status_code == 200
     assert "SETUP_DONE=true" in env_file.read_text(encoding="utf-8")

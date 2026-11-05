@@ -1,6 +1,6 @@
-"""TradeXVm desktop :: launcher.
+"""TradeVMx desktop :: launcher.
 
-Double-click ``run_tradexvm.bat`` (Windows) or ``./run_tradexvm.sh`` (macOS /
+Double-click ``run_tradevmx.bat`` (Windows) or ``./run_tradevmx.sh`` (macOS /
 Linux), or run ``python desktop.py``. It starts the local console on a free
 loopback port and opens your browser. Closing the window stops the desk.
 
@@ -22,7 +22,7 @@ from pathlib import Path
 from app import APP_VERSION, DEFAULT_PORT, DeskState, create_app, settings_store
 from config import configure_logging, get_settings
 
-LOGGER = logging.getLogger("tradexvm.desktop")
+LOGGER = logging.getLogger("tradevmx.desktop")
 
 _BANNER = """
 +--------------------------------------------------------------+
@@ -46,12 +46,12 @@ def _free_port(host: str, preferred: int, attempts: int = 12) -> int:
             return candidate
     raise SystemExit(
         f"No free port between {preferred} and {preferred + attempts - 1}. "
-        "Close the other TradeXVm window or pass --port."
+        "Close the other TradeVMx window or pass --port."
     )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="TradeXVm desktop console")
+    parser = argparse.ArgumentParser(description="TradeVMx desktop console")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     parser.add_argument(
         "--port",
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         app.run(host=args.host, port=port, threaded=True, use_reloader=False, debug=False)
     except KeyboardInterrupt:
-        print("\nStopping TradeXVm...")
+        print("\nStopping TradeVMx...")
     finally:
         desk.shutdown()
     return 0

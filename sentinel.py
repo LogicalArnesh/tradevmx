@@ -1,4 +1,4 @@
-"""TradeXVm :: autonomous sentinel engine.
+"""TradeVMx :: autonomous sentinel engine.
 
 One engine, two front-ends: the desktop console (``app.py``) and the Telegram
 bot (``bot.py``) both drive this class, so an alert can never look different

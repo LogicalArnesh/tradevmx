@@ -1,8 +1,8 @@
-/* TradeXVm console client - no framework, no build step. */
+/* TradeVMx console client - no framework, no build step. */
 (() => {
   "use strict";
 
-  const TOKEN = (document.querySelector('meta[name="tradexvm-token"]') || {}).content || "";
+  const TOKEN = (document.querySelector('meta[name="tradevmx-token"]') || {}).content || "";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
@@ -46,7 +46,7 @@
       method: options.method || "GET",
       headers: {
         "Content-Type": "application/json",
-        "X-TradeXVm-Token": TOKEN,
+        "X-TradeVMx-Token": TOKEN,
         ...(options.headers || {}),
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
@@ -425,7 +425,7 @@
   async function openSetup(force = false) {
     const modal = $("#setup");
     if (!modal) return;
-    if (force) sessionStorage.removeItem("tradexvm.setupSkipped");
+    if (force) sessionStorage.removeItem("tradevmx.setupSkipped");
     if (!settings) await loadSettings();
     renderSetup();
     modal.classList.remove("hidden");
@@ -470,7 +470,7 @@
   }
 
   function skipSetup() {
-    sessionStorage.setItem("tradexvm.setupSkipped", "1");
+    sessionStorage.setItem("tradevmx.setupSkipped", "1");
     closeSetup();
   }
 
@@ -501,7 +501,7 @@
     await Promise.all([refresh(), loadSettings()]);
     if (
       state && state.setup && state.setup.needs_setup &&
-      sessionStorage.getItem("tradexvm.setupSkipped") !== "1"
+      sessionStorage.getItem("tradevmx.setupSkipped") !== "1"
     ) {
       openSetup();
     }
