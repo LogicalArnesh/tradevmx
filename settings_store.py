@@ -56,6 +56,8 @@ class FieldSpec:
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple[str, ...] = ()
+    #: Accepted by the API but never rendered in the form (e.g. SETUP_DONE).
+    hidden: bool = False
 
 
 GROUPS: tuple[tuple[str, str, str], ...] = (
@@ -231,6 +233,22 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         kind="bool",
         help="Speaks alert headlines via the optional 'pyttsx3' package.",
     ),
+    FieldSpec(
+        key="AUTO_ARM",
+        label="Arm automatically on launch",
+        group="desktop",
+        kind="bool",
+        help="Start the sentinel as soon as the app opens, so alerts arrive without pressing anything.",
+    ),
+    FieldSpec(
+        key="UPDATE_REPO",
+        label="Update repository",
+        group="desktop",
+        kind="text",
+        placeholder="yourname/tradexvm",
+        help="GitHub owner/repo used for in-app update checks. Leave empty to disable them.",
+    ),
+    FieldSpec(key="SETUP_DONE", label="Setup completed", group="desktop", kind="bool", hidden=True),
 )
 
 SPEC_BY_KEY: dict[str, FieldSpec] = {spec.key: spec for spec in FIELD_SPECS}
@@ -246,6 +264,9 @@ DEFAULTS: dict[str, str] = {
     "MIN_RISK_REWARD": "2.0",
     "DESKTOP_TOAST": "true",
     "VOICE_ALERTS": "false",
+    "AUTO_ARM": "true",
+    "SETUP_DONE": "false",
+    "UPDATE_REPO": "",
 }
 
 
@@ -443,6 +464,8 @@ def snapshot(path: Path | None = None) -> dict[str, Any]:
     current = read_env(path)
     fields: list[dict[str, Any]] = []
     for spec in FIELD_SPECS:
+        if spec.hidden:
+            continue  # written by the setup wizard, not a user-facing control
         raw = current.get(spec.key, "")
         is_set = bool(raw.strip())
         payload: dict[str, Any] = {

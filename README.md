@@ -15,6 +15,10 @@ on demand                  /live /report /scan /status /wrap
 
 > Research tooling. Not investment advice. Paper-trade it before risking capital.
 
+**Getting it:** download `tradexvm-X.Y.Z.zip` from the Releases page of this
+repository, unzip it, and double-click `run_tradexvm.bat` (Windows) or run
+`./run_tradexvm.sh` (macOS/Linux). Licensed under the [MIT License](LICENSE).
+
 ---
 
 ## 1. What it detects
@@ -49,6 +53,9 @@ sentinel.py         shared APScheduler engine: sweeps, brief, EOD, event bus
 settings_store.py   .env form schema, validation, atomic writes, secret masks
 notify.py           optional desktop toasts / voice (plyer, pyttsx3)
 web/                dashboard UI (vanilla HTML/CSS/JS, no build step)
+version.py          the single version string every surface reports
+updater.py          GitHub release check for the in-app update banner
+release.py          bump version, commit, tag (CI builds the zip)
 bot.py              Telegram front-end over the same sentinel engine
 tests/              offline suite (synthetic OHLC, no network, no creds)
 ```
@@ -166,15 +173,52 @@ Then enable *Desktop toasts* / *Voice announcements* in Configuration. Without
 those packages the toggles simply stay silent; the in-app feed and Telegram
 alerts are unaffected.
 
-**Everyday flow:** open the app -> Configuration, paste the Telegram token and
-chat ids (optionally Gmail + Groq) -> **Send test** on each channel -> **Save** ->
-**Arm sentinel**. Leave the window open during market hours; it sweeps every 15
-minutes and notifies you only when a setup qualifies.
+On first launch a **setup guide** opens by itself: it asks for the Telegram bot
+token and chat ids, then the optional Gmail app password and Groq key, and arms
+the desk when you save. It is the same form as Configuration, limited to the
+three channel groups. Skip it and the guide returns on the next launch.
 
-## 8. Run it 24/7
+**Everyday flow:** start the app -> the desk arms itself (`AUTO_ARM=true`) and
+sweeps every 15 minutes during market hours -> press **Scan now** if you want a
+sweep immediately -> open the feed or Telegram for alerts -> each tape row has a
+PDF button for the full research note.
+
+## 8. Versions & updates
+
+Every release is a git tag `vX.Y.Z`, a GitHub Release with a downloadable zip,
+and an entry in [CHANGELOG.md](CHANGELOG.md). The sidebar shows the running
+version; the app also checks the repository named in `UPDATE_REPO`
+(`owner/repo`, empty disables the check) and shows a download banner above the
+dashboard when a newer tag exists. Results are cached for six hours, and an
+offline machine or a repo with no releases is treated as "nothing to do".
+
+Cut a release:
+
+```bash
+python release.py 1.0.1 "Tighten the opening-brief window"
+git push origin HEAD --tags
+```
+
+`release.py` bumps `version.py`, commits and tags. Pushing the tag runs
+`.github/workflows/release.yml`, which zips the tracked files (no `.env`, no
+logs, no reports) and attaches them to the release; `tests.yml` runs the offline
+suite on every push.
+
+Updating by hand is dropping the new files over the old folder: `.env`, `logs/`
+and `reports/` are not part of the bundle, so your keys and history survive.
+
+## 9. Run it 24/7
 
 The desk only works while it is awake, and a sleeping laptop silently misses
-sweeps. Put it on any always-on Linux box — one vCPU and 1 GB RAM is plenty.
+sweeps. Two ways to keep it alive.
+
+**Your own PC (simplest).** Run `install-autostart.bat` on Windows, or
+`./install-autostart.sh` on macOS/Linux. It registers the console as a login item
+(Task Scheduler, launchd, or a systemd user unit) that restarts if it dies, runs
+headless, and arms the sentinel on boot because `AUTO_ARM=true`. Open
+`http://127.0.0.1:8765` whenever you want the panel.
+
+**A dedicated Linux box.** One vCPU and 1 GB RAM is plenty.
 
 ```bash
 # on the server
@@ -217,7 +261,7 @@ Run exactly **one** bot process per token — Telegram permits a single
 long-polling consumer, so two instances will steal updates from each other.
 After a code change: `git pull && sudo systemctl restart tradexvm`.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -232,8 +276,11 @@ After a code change: `git pull && sudo systemctl restart tradexvm`.
 | "could not write .env" when saving | The project folder is read-only (common under `Program Files`). Move it to your home folder. |
 | No toasts or voice | Optional extras are missing: `pip install plyer pyttsx3`, then save and re-arm. |
 | Settings save says "validation failed" | The offending input is highlighted; chat ids must be numeric, emails valid, holidays `YYYY-MM-DD`, severities 1-5. |
+| No update banner ever appears | `UPDATE_REPO` is empty, or that repo has no published release yet. Set `owner/repo` and push a `vX.Y.Z` tag. |
+| Autostart does nothing | Windows: `schtasks /Query /TN TradeXVm`. Linux: `systemctl --user status tradexvm`. Re-run the installer as the same user that owns the folder. |
+| It never arms by itself | `AUTO_ARM=false`, or a `.env` copied from an older version without the key. Open Configuration once and save. |
 
-## 10. Known limits
+## 11. Known limits
 
 * Yahoo intraday data is delayed (~15 min on many symbols); the nsepython
   overlay is used when available, but NSE endpoints rate-limit aggressively and
@@ -244,3 +291,9 @@ After a code change: `git pull && sudo systemctl restart tradexvm`.
   falls back to yfinance-only data without raising.
 * Groq is called per actionable instrument, keeping the free tier comfortable;
   rate limits degrade to the rule engine rather than failing the sweep.
+
+## 12. License
+
+MIT — see [LICENSE](LICENSE). Use it, fork it, sell your own alerts with it. No
+warranty: this is research tooling, not investment advice, and the author is not
+responsible for what the market does to your capital.

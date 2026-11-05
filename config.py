@@ -289,6 +289,9 @@ class Settings:
     # desktop experience
     desktop_toast: bool = True
     voice_alerts: bool = False
+    auto_arm: bool = True
+    update_repo: str = ""
+    setup_done: bool = False
 
     # schedule
     eod_wrap_time: time = time(15, 40)
@@ -335,6 +338,9 @@ class Settings:
             alert_cooldown_minutes=max(0, _env_int("ALERT_COOLDOWN_MINUTES", 45)),
             desktop_toast=_env_bool("DESKTOP_TOAST", True),
             voice_alerts=_env_bool("VOICE_ALERTS", False),
+            auto_arm=_env_bool("AUTO_ARM", True),
+            update_repo=_env_str("UPDATE_REPO"),
+            setup_done=_env_bool("SETUP_DONE", False),
             eod_wrap_time=_env_time("EOD_WRAP_TIME", time(15, 40)),
             opening_brief_time=_env_time("OPENING_BRIEF_TIME", time(9, 16)),
             market_holidays=_env_dates("MARKET_HOLIDAYS"),
@@ -484,6 +490,9 @@ class Settings:
             "alert_min_severity": self.alert_min_severity,
             "desktop_toast": self.desktop_toast,
             "voice_alerts": self.voice_alerts,
+            "auto_arm": self.auto_arm,
+            "update_repo": self.update_repo,
+            "setup_done": self.setup_done,
             "market_holidays": len(self.market_holidays),
         }
 
