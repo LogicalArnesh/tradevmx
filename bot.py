@@ -1,19 +1,10 @@
-"""TradeXVm :: Telegram desk entry point.
+"""TradeXVm :: Telegram front-end for the shared sentinel engine.
 
-Wires together the scanner, Groq brain, PDF engine and alert dispatcher behind a
-``python-telegram-bot`` v20+ application, and drives autonomy with an
-APScheduler :class:`AsyncIOScheduler` (Asia/Kolkata):
+The autonomous work (sweeps, brief, wrap) lives in ``sentinel.py``; this module
+is only the chat surface: commands, authorization, and formatting. That keeps
+Telegram and the desktop console on exactly the same engine.
 
-===============  =========================================================
-09:16 Mon-Fri    opening bell brief  -> Telegram + email
-every 15 min     intraday sweep      -> alerts for qualifying setups
-15:40 Mon-Fri    end-of-day wrap     -> PDF report + email attachment
-===============  =========================================================
-
-Every job is additionally gated by ``Settings.is_market_open`` so a cron tick at
-09:00 or 15:45 can never touch the tape outside the session.
-
-Run:  ``python bot.py``  (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS)
+Run:  ``python bot.py``   (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS)
 """
 
 from __future__ import annotations
@@ -23,19 +14,16 @@ import contextlib
 import logging
 from datetime import datetime
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from telegram import BotCommand, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from ai_engine import GroqBrain, TradePlan
 from alerts import (
     AlertDispatcher,
     format_market_pulse,
-    format_scan_summary,
     format_snapshot_card,
+    format_scan_summary,
 )
 from config import (
     IST,
@@ -46,8 +34,8 @@ from config import (
     configure_logging,
     get_settings,
 )
-from market_scanner import MarketScanner, ScanReport
-from report_engine import ReportEngine
+from notify import LocalNotifier
+from sentinel import Sentinel
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,7 +43,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("live", "Live pulse: /live or /live RELIANCE"),
     ("report", "AI research PDF: /report BANKNIFTY"),
     ("scan", "Full watchlist sweep with signals"),
-    ("status", "Desk, scheduler and data-status"),
+    ("status", "Desk, scheduler and data status"),
     ("watchlist", "Instruments under surveillance"),
     ("wrap", "Send the end-of-day wrap now"),
     ("help", "Command reference"),
@@ -63,20 +51,30 @@ COMMANDS: tuple[tuple[str, str], ...] = (
 
 
 class TradeXVmBot:
-    """Owns the Telegram application and every background job."""
+    """Telegram surface over :class:`sentinel.Sentinel`."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.scanner = MarketScanner(settings)
-        self.brain = GroqBrain(settings)
-        self.reports = ReportEngine(settings)
         self.alerts = AlertDispatcher(settings)
-        self.scheduler = AsyncIOScheduler(
-            timezone=IST,
-            job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 120},
+        self.sentinel = Sentinel(
+            settings,
+            dispatcher=self.alerts,
+            notifier=LocalNotifier(toast=False, speak=False),
         )
-        self._scan_lock = asyncio.Lock()
         self._app: Application | None = None
+
+    # ------------------------------------------------------------ shortcuts
+    @property
+    def scanner(self) -> object:
+        return self.sentinel.scanner
+
+    @property
+    def brain(self) -> object:
+        return self.sentinel.brain
+
+    @property
+    def reports(self) -> object:
+        return self.sentinel.reports
 
     # ------------------------------------------------------------ lifecycle
     def build_application(self) -> Application:
@@ -107,9 +105,9 @@ class TradeXVmBot:
             await application.bot.set_my_commands(
                 [BotCommand(command, description) for command, description in COMMANDS]
             )
-        self._schedule_jobs()
+        self.sentinel.start()
         LOGGER.info(
-            "TradeXVm online | chats=%s | universe=%s | scan=%smin | groq=%s | email=%s",
+            "TradeXVm bot online | chats=%s | universe=%s | sweep=%smin | groq=%s | email=%s",
             len(self.settings.telegram_chat_ids),
             len(self.settings.watchlist),
             self.settings.scan_interval_minutes,
@@ -118,43 +116,9 @@ class TradeXVmBot:
         )
 
     async def _post_shutdown(self, application: Application) -> None:
-        if self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
-        self.scanner.close()
-        LOGGER.info("TradeXVm stopped.")
-
-    def _schedule_jobs(self) -> None:
-        interval = max(1, min(self.settings.scan_interval_minutes, 59))
-        brief = self.settings.opening_brief_time
-        eod = self.settings.eod_wrap_time
-
-        self.scheduler.add_job(
-            self.job_intraday_scan,
-            CronTrigger(day_of_week="mon-fri", hour="9-15", minute=f"*/{interval}", timezone=IST),
-            id="intraday_scan",
-            name="Intraday sweep",
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            self.job_opening_brief,
-            CronTrigger(day_of_week="mon-fri", hour=brief.hour, minute=brief.minute, timezone=IST),
-            id="opening_brief",
-            name="Opening bell brief",
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            self.job_eod_wrap,
-            CronTrigger(day_of_week="mon-fri", hour=eod.hour, minute=eod.minute, timezone=IST),
-            id="eod_wrap",
-            name="End of day wrap",
-            replace_existing=True,
-        )
-        if not self.scheduler.running:
-            self.scheduler.start()
-        LOGGER.info(
-            "Scheduler armed: sweep */%s min (09:15-15:30 IST), brief %s, EOD %s",
-            interval, brief.strftime("%H:%M"), eod.strftime("%H:%M"),
-        )
+        self.sentinel.stop()
+        self.sentinel.close()
+        LOGGER.info("TradeXVm bot stopped.")
 
     def run(self) -> None:
         application = self.build_application()
@@ -203,95 +167,15 @@ class TradeXVmBot:
         message = update.effective_message
         if message is None:
             return
-        for chunk_start in range(0, len(text), 4000):
+        for start in range(0, len(text), 4000):
             await message.reply_text(
-                text[chunk_start : chunk_start + 4000],
+                text[start : start + 4000],
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
 
     def _resolve(self, query: str) -> Instrument:
         return self.settings.resolve_instrument(query)
-
-    async def _scan(self, *, force: bool) -> ScanReport:
-        if self._scan_lock.locked():
-            LOGGER.info("Scan already running; returning cached sweep.")
-        async with self._scan_lock:
-            return await asyncio.to_thread(self.scanner.scan, None, force=force)
-
-    async def _plans_for(self, report: ScanReport) -> dict[str, TradePlan]:
-        plans: dict[str, TradePlan] = {}
-        for snapshot in report.snapshots:
-            try:
-                plans[snapshot.symbol] = await self.brain.plan(snapshot)
-            except Exception as exc:  # noqa: BLE001 - plan failures are non-fatal
-                LOGGER.exception("Plan generation failed for %s: %s", snapshot.symbol, exc)
-        return plans
-
-    # ---------------------------------------------------------------- jobs
-    async def job_intraday_scan(self) -> None:
-        if not self.settings.is_market_open():
-            LOGGER.debug("Sweep skipped: market closed (%s IST).", datetime.now(IST).strftime("%H:%M"))
-            return
-        started = datetime.now(IST)
-        try:
-            report = await self._scan(force=True)
-            actionable = report.actionable(self.settings.alert_min_severity)
-            plans: dict[str, TradePlan] = {}
-            for snapshot in actionable:
-                plans[snapshot.symbol] = await self.brain.plan(snapshot)
-
-            delivered = await self.alerts.dispatch_report(report, plans)
-            LOGGER.info(
-                "Sweep %s: %s scanned, %s actionable, %s alerts delivered, %s errors (%.1fs)",
-                started.strftime("%H:%M"),
-                report.scanned,
-                len(actionable),
-                delivered,
-                len(report.errors),
-                (datetime.now(IST) - started).total_seconds(),
-            )
-            if not report.snapshots:
-                await self.alerts.telegram.broadcast(
-                    "\u26a0\ufe0f <b>TradeXVm</b>: the sweep returned no data. "
-                    "Check provider connectivity."
-                )
-        except Exception as exc:  # noqa: BLE001 - the scheduler must survive
-            LOGGER.exception("Intraday sweep failed: %s", exc)
-            await self.alerts.telegram.broadcast(
-                f"\u26a0\ufe0f <b>TradeXVm sweep error</b>: {str(exc)[:180]}"
-            )
-
-    async def job_opening_brief(self) -> None:
-        if not self.settings.is_market_open():
-            return
-        try:
-            report = await self._scan(force=True)
-            await self.alerts.send_opening_brief(report)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Opening brief failed: %s", exc)
-
-    async def job_eod_wrap(self) -> None:
-        if not self.settings.is_trading_day():
-            LOGGER.debug("EOD wrap skipped: not a trading day.")
-            return
-        try:
-            report = await self._scan(force=True)
-            if not report.snapshots:
-                LOGGER.error("EOD wrap aborted: no data.")
-                return
-            plans = await self._plans_for(report)
-            artifact = await asyncio.to_thread(
-                self.reports.render_portfolio, report.snapshots, plans, title="End of Day Wrap"
-            )
-            note = await self.brain.desk_note(report.snapshots)
-            await self.alerts.send_daily_wrap(report, note, artifact.path)
-            LOGGER.info("EOD wrap delivered (%s, %.1f KB).", artifact.filename, artifact.size_kb)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("EOD wrap failed: %s", exc)
-            await self.alerts.telegram.broadcast(
-                f"\u26a0\ufe0f <b>TradeXVm EOD error</b>: {str(exc)[:180]}"
-            )
 
     # ------------------------------------------------------------ commands
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,11 +210,11 @@ class TradeXVmBot:
         try:
             if query:
                 instrument = self._resolve(query)
-                snapshot = await asyncio.to_thread(self.scanner.snapshot, instrument, force=True)
+                snapshot = await asyncio.to_thread(self.sentinel.scanner.snapshot, instrument, force=True)
                 await self._reply(update, format_snapshot_card(snapshot))
                 return
             indices = [inst for inst in self.settings.watchlist if inst.is_index][:2]
-            report = await asyncio.to_thread(self.scanner.scan, indices, force=True)
+            report = await asyncio.to_thread(self.sentinel.scanner.scan, indices, force=True)
             text = format_market_pulse(report)
             if self.settings.is_market_open():
                 text += "\n\n<i>Full tape: /scan \u00b7 PDF: /report NIFTY</i>"
@@ -351,16 +235,16 @@ class TradeXVmBot:
             return
         query = " ".join(context.args).strip() if context.args else "NIFTY 50"
         await self._typing(update, ChatAction.UPLOAD_DOCUMENT)
-        status = await update.effective_message.reply_text(
-            f"\U0001f4c4 Building research note for <b>{query}</b>...",
-            parse_mode=ParseMode.HTML,
-        ) if update.effective_message else None
+        status = (
+            await update.effective_message.reply_text(
+                f"\U0001f4c4 Building research note for <b>{query}</b>...",
+                parse_mode=ParseMode.HTML,
+            )
+            if update.effective_message
+            else None
+        )
         try:
-            instrument = self._resolve(query)
-            snapshot = await asyncio.to_thread(self.scanner.snapshot, instrument, force=True)
-            plan = await self.brain.plan(snapshot)
-            artifact = await asyncio.to_thread(self.reports.render, snapshot, plan)
-
+            artifact, plan, snapshot = await asyncio.to_thread(self.sentinel.build_report, query)
             caption = (
                 f"<b>{snapshot.display_name}</b> \u00b7 {snapshot.timeframe} \u00b7 "
                 f"{snapshot.as_of.strftime('%d %b %H:%M')} IST\n"
@@ -391,7 +275,7 @@ class TradeXVmBot:
             return
         await self._typing(update)
         try:
-            report = await self._scan(force=True)
+            report = await asyncio.to_thread(self.sentinel.scan, True)
             await self._reply(
                 update, format_scan_summary(report, self.settings.alert_min_severity)
             )
@@ -403,7 +287,7 @@ class TradeXVmBot:
         if not await self._guard(update):
             return
         now = datetime.now(IST)
-        jobs = [job for job in self.scheduler.get_jobs()] if self.scheduler.running else []
+        schedule = self.sentinel.schedule_table()
         lines = [
             "<b>TradeXVm status</b>",
             f"IST clock: {now.strftime('%a %d %b %Y, %H:%M:%S')}",
@@ -422,13 +306,12 @@ class TradeXVmBot:
             f"Email: {'ready' if self.settings.email_ready else 'disabled'} "
             f"({len(self.settings.resolved_recipients)} recipients)",
             f"Telegram: {len(self.settings.telegram_chat_ids)} chat(s)",
+            f"Sentinel: {'armed' if self.sentinel.running else 'idle'}",
         ]
-        if jobs:
+        if schedule:
             lines += ["", "<b>Scheduled jobs</b>"]
-            for job in jobs:
-                next_run = getattr(job, "next_run_time", None)
-                stamp = next_run.astimezone(IST).strftime("%a %H:%M") if next_run else "not armed"
-                lines.append(f"\u2022 {job.name}: next {stamp}")
+            for job in schedule:
+                lines.append(f"\u2022 {job['name']}: next {job['next_label'] or 'not armed'}")
         await self._reply(update, "\n".join(lines))
 
     async def cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -446,7 +329,13 @@ class TradeXVmBot:
             return
         await self._typing(update, ChatAction.UPLOAD_DOCUMENT)
         await self._reply(update, "\U0001f4d8 Compiling the wrap and mailing the PDF...")
-        await self.job_eod_wrap()
+        try:
+            artifact = await asyncio.to_thread(self.sentinel.cycle_eod)
+            if artifact is None:
+                await self._reply(update, "\u26a0\ufe0f Wrap skipped: no market data available.")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("wrap failed: %s", exc)
+            await self._reply(update, f"\u26a0\ufe0f Wrap failed: {str(exc)[:180]}")
 
     async def cmd_unknown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -471,8 +360,8 @@ def main() -> int:
     except ConfigError as exc:
         LOGGER.error("TradeXVm cannot start: %s", exc)
         LOGGER.error(
-            "Create .env from .env.example and set TELEGRAM_BOT_TOKEN plus at least one "
-            "TELEGRAM_CHAT_ID, then restart."
+            "Create .env from .env.example (or open the desktop console) and set "
+            "TELEGRAM_BOT_TOKEN plus at least one TELEGRAM_CHAT_ID, then restart."
         )
         return 2
 
@@ -482,7 +371,7 @@ def main() -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive stop
         LOGGER.info("Interrupted by operator.")
     finally:
-        bot.scanner.close()
+        bot.sentinel.close()
     return 0
 
 

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="tradexvm-token" content="{{ token }}" />
+  <title>TradeXVm · NSE Market Desk</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+</head>
+<body>
+  <div class="grid-glow" aria-hidden="true"></div>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <strong>TRADEXVM</strong>
+          <small>NSE MARKET DESK</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Sections">
+        <button class="nav-item is-active" type="button" data-view="dashboard">
+          <span class="nav-dot" aria-hidden="true"></span>Dashboard
+        </button>
+        <button class="nav-item" type="button" data-view="settings">
+          <span class="nav-dot" aria-hidden="true"></span>Configuration
+        </button>
+        <button class="nav-item" type="button" data-view="activity">
+          <span class="nav-dot" aria-hidden="true"></span>Activity
+        </button>
+      </nav>
+
+      <div class="rail-foot">
+        <div class="rail-status">
+          <span id="phase-led" class="led"></span>
+          <span id="phase-label" class="mono">—</span>
+        </div>
+        <div id="clock-time" class="clock mono">--:--:--</div>
+        <div id="clock-date" class="muted small">—</div>
+        <div class="muted small">v{{ version }} · local only</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="view-title">Market pulse</h1>
+          <p id="view-sub" class="muted">Waiting for the first sweep.</p>
+        </div>
+        <div id="readiness" class="chips" aria-label="Channel status"></div>
+      </header>
+
+      <section id="view-dashboard" class="view">
+        <div class="panel controls">
+          <button id="toggle-sentinel" class="btn primary" type="button">Arm sentinel</button>
+          <button id="scan-now" class="btn" type="button">Scan now</button>
+          <span id="sentinel-status" class="status"><i></i> idle</span>
+          <span id="next-run" class="muted small">No schedule</span>
+          <span class="spacer"></span>
+          <button id="refresh-state" class="btn ghost small" type="button">Refresh</button>
+        </div>
+
+        <div id="stats" class="stats"></div>
+
+        <div class="split">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Tape</h2>
+              <span id="scan-time" class="muted small"></span>
+            </div>
+            <div id="tape" class="tape">
+              <div class="empty">No sweep yet. Press <b>Scan now</b>, or arm the sentinel.</div>
+            </div>
+          </div>
+
+          <div class="panel feed">
+            <div class="panel-head">
+              <h2>Signal feed</h2>
+              <span id="feed-count" class="muted small">0</span>
+            </div>
+            <ul id="events" class="events">
+              <li class="empty">Quiet.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view hidden">
+        <div class="panel wide">
+          <div class="panel-head">
+            <h2>Configuration</h2>
+            <span id="env-path" class="muted small"></span>
+          </div>
+          <p class="muted small intro">
+            Saved to <code>.env</code> on this PC, atomically, and applied immediately without a
+            restart. Secrets are stored on disk but never sent back to the browser.
+          </p>
+          <form id="settings-form" autocomplete="off"></form>
+          <div class="form-actions">
+            <button id="save-settings" class="btn primary" type="button">Save configuration</button>
+            <span class="muted small">Validation runs before anything is written.</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-activity" class="view hidden">
+        <div class="panel wide">
+          <div class="panel-head">
+            <h2>Activity log</h2>
+            <button id="refresh-log" class="btn ghost small" type="button">Refresh</button>
+          </div>
+          <pre id="log-output" class="log">Loading...</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <noscript><p class="noscript">TradeXVm needs JavaScript enabled in your browser.</p></noscript>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
