@@ -28,6 +28,10 @@ from zoneinfo import ZoneInfo
 
 BASE_DIR: Final[Path] = Path(__file__).resolve().parent
 
+#: Upstream repository consulted for in-app update notices when ``UPDATE_REPO``
+#: is not set. Point it at your own fork if you distribute a modified copy.
+DEFAULT_UPDATE_REPO: Final[str] = "LogicalArnesh/tradevmx"
+
 try:  # python-dotenv is optional at runtime for air-gapped deployments
     from dotenv import load_dotenv
 
@@ -290,7 +294,9 @@ class Settings:
     desktop_toast: bool = True
     voice_alerts: bool = False
     auto_arm: bool = True
-    update_repo: str = ""
+    # Desktop builds ship pointed at the upstream repository so a fresh download
+    # still learns about new versions without any configuration.
+    update_repo: str = DEFAULT_UPDATE_REPO
     setup_done: bool = False
 
     # schedule
@@ -339,7 +345,7 @@ class Settings:
             desktop_toast=_env_bool("DESKTOP_TOAST", True),
             voice_alerts=_env_bool("VOICE_ALERTS", False),
             auto_arm=_env_bool("AUTO_ARM", True),
-            update_repo=_env_str("UPDATE_REPO"),
+            update_repo=_env_str("UPDATE_REPO", DEFAULT_UPDATE_REPO),
             setup_done=_env_bool("SETUP_DONE", False),
             eod_wrap_time=_env_time("EOD_WRAP_TIME", time(15, 40)),
             opening_brief_time=_env_time("OPENING_BRIEF_TIME", time(9, 16)),
