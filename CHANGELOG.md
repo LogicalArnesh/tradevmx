@@ -4,6 +4,14 @@ Versions follow `MAJOR.MINOR.PATCH` and every release is a git tag `vX.Y.Z`, a
 GitHub release with a downloadable zip, and (if `UPDATE_REPO` is set) a banner
 inside the app.
 
+## 1.0.1 — update checks start clean
+
+- Fresh downloads point at the upstream repository by default, so the update
+  banner works without filling in `UPDATE_REPO` first (a fork only needs to
+  override it).
+- A GitHub rate limit on shared or corporate connections now reads "rate limit
+  reached, will check again later" instead of a bare HTTP error.
+
 ## 1.0.0 — first public release
 
 The autonomous NSE desk, running entirely on your own PC.

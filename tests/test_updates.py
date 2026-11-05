@@ -53,6 +53,16 @@ def test_check_treats_missing_release_as_normal(monkeypatch) -> None:
     assert "no releases" in str(payload["error"])
 
 
+def test_check_explains_a_rate_limit(monkeypatch) -> None:
+    def limited(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://api.github.com", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(updater, "_fetch", limited)
+    payload = updater.check("someone/tradevmx", "1.0.0")
+    assert payload["available"] is False
+    assert "rate limit" in str(payload["error"]).lower()
+
+
 def test_check_survives_offline(monkeypatch) -> None:
     def offline(*_args, **_kwargs):
         raise urllib.error.URLError("name resolution failed")

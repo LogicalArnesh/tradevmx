@@ -22,7 +22,7 @@ _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def _run(*args: str) -> str:
-    result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(("git", *args), cwd=ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} failed:\n{result.stderr.strip()}")
     return result.stdout.strip()

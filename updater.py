@@ -80,9 +80,14 @@ def check(repo: str, current: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[
     try:
         release = _fetch(repo.strip(), timeout)
     except urllib.error.HTTPError as exc:
-        payload["error"] = (
-            "no releases published yet" if exc.code == 404 else f"GitHub returned {exc.code}"
-        )
+        if exc.code == 404:
+            payload["error"] = "no releases published yet"
+        elif exc.code in (403, 429):
+            # Shared or corporate IPs exhaust the anonymous quota; nothing is wrong
+            # with the install, and the next check hours later usually succeeds.
+            payload["error"] = "GitHub rate limit reached, will check again later"
+        else:
+            payload["error"] = f"GitHub returned {exc.code}"
         return payload
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         payload["error"] = f"could not reach GitHub ({getattr(exc, 'reason', exc)})"
