@@ -346,11 +346,9 @@
     }
   }
 
-  async function saveSettings() {
-    const form = $("#settings-form");
-    if (!form) return;
+  function collectValues(root) {
     const values = {};
-    $$("[data-key]", form).forEach((input) => {
+    $$("[data-key]", root).forEach((input) => {
       const key = input.dataset.key;
       const kind = input.dataset.kind;
       input.classList.remove("input-error");
@@ -364,6 +362,13 @@
       }
       values[key] = input.value;
     });
+    return values;
+  }
+
+  async function saveSettings() {
+    const form = $("#settings-form");
+    if (!form) return;
+    const values = collectValues(form);
 
     const button = $("#save-settings");
     const restore = setBusy(button, "Saving…");
@@ -372,6 +377,7 @@
       settings = data.settings;
       renderSettings(settings);
       renderAll(data.state);
+      checkUpdate();
       toast("Configuration saved and applied.");
     } catch (error) {
       toast(error.message, "error");
@@ -400,6 +406,106 @@
     } finally {
       restore();
     }
+  }
+
+  /* ---------------------------------------------------------- onboarding */
+  const SETUP_GROUPS = ["telegram", "email", "groq"];
+
+  function renderSetup() {
+    const body = $("#setup-body");
+    if (!body) return;
+    if (!settings) {
+      body.innerHTML = `<p class="muted small">Could not load the form. Open Configuration instead.</p>`;
+      return;
+    }
+    const fields = settings.fields.filter((field) => SETUP_GROUPS.includes(field.group));
+    body.innerHTML = fields.map(fieldControl).join("");
+  }
+
+  async function openSetup(force = false) {
+    const modal = $("#setup");
+    if (!modal) return;
+    if (force) sessionStorage.removeItem("tradexvm.setupSkipped");
+    if (!settings) await loadSettings();
+    renderSetup();
+    modal.classList.remove("hidden");
+    const first = $("#setup-body input");
+    if (first) first.focus();
+  }
+
+  function closeSetup() {
+    const modal = $("#setup");
+    if (modal) modal.classList.add("hidden");
+  }
+
+  async function saveSetup() {
+    const modal = $("#setup");
+    if (!modal) return;
+    const values = collectValues(modal);
+    values.SETUP_DONE = true;
+    const button = $("#setup-save");
+    const restore = setBusy(button, "Saving…");
+    try {
+      const data = await api("/api/settings", { method: "POST", body: { values } });
+      settings = data.settings;
+      renderSettings(settings);
+      renderAll(data.state);
+      closeSetup();
+      toast("Setup saved — the desk is armed and alerting.");
+    } catch (error) {
+      toast(error.message, "error");
+      if (error.fields) {
+        Object.entries(error.fields).forEach(([key, message]) => {
+          const input = $(`[data-key="${key}"]`, modal);
+          if (input) {
+            input.classList.add("input-error");
+            input.title = message;
+          }
+        });
+        toast("Some fields need attention — hover the highlighted input.", "error");
+      }
+    } finally {
+      restore();
+    }
+  }
+
+  function skipSetup() {
+    sessionStorage.setItem("tradexvm.setupSkipped", "1");
+    closeSetup();
+  }
+
+  /* -------------------------------------------------------------- updates */
+  function renderUpdate(info) {
+    const host = $("#update-banner");
+    if (!host) return;
+    if (!info || !info.available) {
+      host.classList.add("hidden");
+      return;
+    }
+    host.classList.remove("hidden");
+    host.innerHTML = `
+      <span class="banner-dot" aria-hidden="true"></span>
+      <span><b>v${esc(info.latest)}</b> is available — this build is v${esc(info.current)}.</span>
+      <a class="btn small" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Download</a>`;
+  }
+
+  async function checkUpdate() {
+    try {
+      renderUpdate(await api("/api/update"));
+    } catch (error) {
+      renderUpdate(null);
+    }
+  }
+
+  async function boot() {
+    await Promise.all([refresh(), loadSettings()]);
+    if (
+      state && state.setup && state.setup.needs_setup &&
+      sessionStorage.getItem("tradexvm.setupSkipped") !== "1"
+    ) {
+      openSetup();
+    }
+    checkUpdate();
   }
 
   /* ---------------------------------------------------------------- log */
@@ -440,6 +546,9 @@
     $("#refresh-state")?.addEventListener("click", refresh);
     $("#save-settings")?.addEventListener("click", saveSettings);
     $("#refresh-log")?.addEventListener("click", loadLog);
+    $("#setup-save")?.addEventListener("click", saveSetup);
+    $("#setup-skip")?.addEventListener("click", skipSetup);
+    $("#start-setup")?.addEventListener("click", () => openSetup(true));
 
     $("#tape")?.addEventListener("click", (event) => {
       const button = event.target.closest("[data-report]");
@@ -462,6 +571,5 @@
   }
 
   wire();
-  refresh();
-  loadSettings();
+  boot();
 })();

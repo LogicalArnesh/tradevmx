@@ -79,7 +79,16 @@ def main(argv: list[str] | None = None) -> int:
 
     print(_BANNER.format(version=APP_VERSION, url=url, env=settings_store.ENV_PATH))
     if not settings.telegram_ready and not settings.email_ready:
-        print("  Note: no alert channel configured yet - open Configuration in the app.\n")
+        print("  Note: no alert channel configured yet - the setup guide opens in the app.\n")
+
+    # Always-on by default: sweep and alert without pressing anything.
+    if desk.settings.auto_arm:
+        try:
+            desk.sentinel.start()
+            print("  Sentinel armed automatically (AUTO_ARM=true).\n")
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            LOGGER.exception("Auto-arm failed: %s", exc)
+            print(f"  Could not arm the sentinel automatically: {exc}\n")
 
     if not args.no_browser:
         threading.Timer(1.2, webbrowser.open, args=(url,)).start()
