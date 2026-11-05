@@ -1,0 +1,23 @@
+# TradeXVm - autonomous Indian market desk
+# Python 3.11+
+yfinance>=0.2.40
+nsepython>=2.95
+pandas>=2.0
+numpy>=1.26
+requests>=2.31
+
+# PDF research reports
+reportlab>=4.0
+
+# Telegram bot + autonomous scheduler
+python-telegram-bot>=20.7
+apscheduler>=3.10,<4.0
+
+# LLM intelligence engine
+groq>=0.9
+
+# Environment + tooling
+python-dotenv>=1.0
+
+# Test suite (optional, dev only)
+pytest>=8.0
