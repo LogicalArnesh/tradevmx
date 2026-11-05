@@ -1,4 +1,4 @@
-"""TradeXVm test suite.
+"""TradeVMx test suite.
 
 Offline and deterministic: synthetic OHLC series stand in for the network, so
 the detectors, risk contract, PDF renderer and message formatting can be
@@ -341,7 +341,7 @@ def test_pdf_report_renders(settings: Settings, bullish_snapshot: MarketSnapshot
     assert data.startswith(b"%PDF")
     assert len(data) > 5_000
     assert b"/Type /Page" in data
-    assert artifact.filename.startswith("TradeXVm_RELIANCE_")
+    assert artifact.filename.startswith("TradeVMx_RELIANCE_")
 
 
 def test_portfolio_pdf_renders(settings: Settings, bullish_snapshot: MarketSnapshot) -> None:

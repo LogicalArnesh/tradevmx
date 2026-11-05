@@ -1,4 +1,4 @@
-"""Cut a TradeXVm release.
+"""Cut a TradeVMx release.
 
     python release.py 1.0.1 "Tighten the opening-brief window"
 
@@ -37,7 +37,7 @@ def _write_version(version: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Bump TradeXVm and tag a release")
+    parser = argparse.ArgumentParser(description="Bump TradeVMx and tag a release")
     parser.add_argument("version", help="new version, e.g. 1.0.1")
     parser.add_argument("message", nargs="?", default="", help="release note headline")
     args = parser.parse_args(argv)

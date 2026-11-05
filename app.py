@@ -1,4 +1,4 @@
-"""TradeXVm desktop :: local control room.
+"""TradeVMx desktop :: local control room.
 
 A single-user Flask app bound to ``127.0.0.1`` that the desktop launcher opens
 in your browser. It is the "Jarvis console": configure keys, arm the sentinel,
@@ -7,7 +7,7 @@ watch the tape, read the feed, download research PDFs.
 Security posture (localhost, single operator)
 --------------------------------------------
 * binds loopback by default (the launcher refuses ``0.0.0.0`` unless asked),
-* every mutating request needs ``X-TradeXVm-Token`` (random per launch, injected
+* every mutating request needs ``X-TradeVMx-Token`` (random per launch, injected
   into the page) plus a same-origin check, so another website cannot POST to
   ``localhost`` and rewrite your keys,
 * secrets are never returned - the settings API only exposes ``is_set`` masks,
@@ -226,7 +226,7 @@ def create_app(
 ) -> Flask:
     app = Flask(__name__, static_folder="web/static", template_folder="web/templates")
     app.config["JSON_SORT_KEYS"] = False
-    app.config["TRADEXVM_TOKEN"] = token or secrets.token_urlsafe(24)
+    app.config["TRADEVMX_TOKEN"] = token or secrets.token_urlsafe(24)
     desk = state or DeskState(env_path)
     app.config["DESK"] = desk
     configure_logging(desk.settings)
@@ -244,8 +244,8 @@ def create_app(
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not _same_origin():
                 return jsonify({"error": "cross-origin request rejected"}), 403
-            supplied = request.headers.get("X-TradeXVm-Token", "")
-            if not secrets.compare_digest(supplied, app.config["TRADEXVM_TOKEN"]):
+            supplied = request.headers.get("X-TradeVMx-Token", "")
+            if not secrets.compare_digest(supplied, app.config["TRADEVMX_TOKEN"]):
                 return jsonify({"error": "not authorised"}), 401
             return view(*args, **kwargs)
 
@@ -255,7 +255,7 @@ def create_app(
     @app.get("/")
     def index() -> str:
         return render_template(
-            "index.html", token=app.config["TRADEXVM_TOKEN"], version=APP_VERSION
+            "index.html", token=app.config["TRADEVMX_TOKEN"], version=APP_VERSION
         )
 
     @app.after_request
@@ -363,7 +363,7 @@ def create_app(
         if channel == "telegram":
             ok = asyncio.run(
                 desk.alerts.telegram.broadcast(
-                    "\u2705 <b>TradeXVm</b> test message \u2014 Telegram is wired up."
+                    "\u2705 <b>TradeVMx</b> test message \u2014 Telegram is wired up."
                 )
             )
             return jsonify(
@@ -378,10 +378,10 @@ def create_app(
         if channel == "email":
             ok = asyncio.run(
                 desk.alerts.email.send_async(
-                    "TradeXVm | Test message",
-                    "<p>TradeXVm test message.</p>"
+                    "TradeVMx | Test message",
+                    "<p>TradeVMx test message.</p>"
                     "<p>If you can read this, Gmail SMTP and the app password are working.</p>",
-                    text_body="TradeXVm test message. Gmail SMTP is working.",
+                    text_body="TradeVMx test message. Gmail SMTP is working.",
                 )
             )
             return jsonify(
@@ -425,7 +425,7 @@ def create_app(
             lines = max(20, min(int(request.args.get("lines", 200)), 2000))
         except ValueError:
             lines = 200
-        path = desk.settings.log_dir / "tradexvm.log"
+        path = desk.settings.log_dir / "tradevmx.log"
         try:
             content = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
         except OSError:
@@ -436,6 +436,6 @@ def create_app(
     def _not_found(error: Any) -> Any:
         if request.path.startswith("/api/"):
             return jsonify({"error": "not found"}), 404
-        return render_template("index.html", token=app.config["TRADEXVM_TOKEN"], version=APP_VERSION), 404
+        return render_template("index.html", token=app.config["TRADEVMX_TOKEN"], version=APP_VERSION), 404
 
     return app

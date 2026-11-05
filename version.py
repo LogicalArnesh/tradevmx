@@ -1,4 +1,4 @@
-"""Single source of truth for the TradeXVm version.
+"""Single source of truth for the TradeVMx version.
 
 Bump it with ``python release.py 1.2.0`` (which also commits and tags), never by
 hand in several places.  The in-app updater compares this string with the latest

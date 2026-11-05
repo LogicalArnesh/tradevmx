@@ -1,4 +1,4 @@
-"""TradeXVm :: live market scanner.
+"""TradeVMx :: live market scanner.
 
 Responsible for
 

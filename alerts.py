@@ -1,4 +1,4 @@
-"""TradeXVm :: alert dispatch (Telegram + Gmail SMTP).
+"""TradeVMx :: alert dispatch (Telegram + Gmail SMTP).
 
 * Telegram pushes HTML alerts to every configured chat and can deliver PDF
   documents via ``send_document``.
@@ -213,7 +213,7 @@ class EmailChannel:
     ) -> EmailMessage:
         message = EmailMessage()
         message["Subject"] = subject
-        message["From"] = f"TradeXVm Desk <{self.settings.gmail_user}>"
+        message["From"] = f"TradeVMx Desk <{self.settings.gmail_user}>"
         message["To"] = ", ".join(self.settings.resolved_recipients)
         message["Date"] = datetime.now(IST).strftime("%a, %d %b %Y %H:%M:%S %z")
 
@@ -381,7 +381,7 @@ def format_snapshot_card(snapshot: "MarketSnapshot") -> str:
 
 
 def format_market_pulse(report: "ScanReport") -> str:
-    lines = [f"\U0001f1ee\U0001f1f3 <b>TradeXVm Market Pulse</b> \u00b7 {report.created_at.strftime('%H:%M')} IST"]
+    lines = [f"\U0001f1ee\U0001f1f3 <b>TradeVMx Market Pulse</b> \u00b7 {report.created_at.strftime('%H:%M')} IST"]
     for snapshot in report.snapshots:
         arrow = _pnl_arrow(snapshot.change_pct)
         top = max(snapshot.signals, key=lambda s: s.severity, default=None)
@@ -422,7 +422,7 @@ def format_scan_summary(report: "ScanReport", min_severity: int = 3) -> str:
 
 def format_daily_wrap(report: "ScanReport", desk_note: str) -> str:
     lines = [
-        f"\U0001f4d8 <b>TradeXVm End of Day</b> \u00b7 "
+        f"\U0001f4d8 <b>TradeVMx End of Day</b> \u00b7 "
         f"{report.created_at.strftime('%d %b %Y')}",
         "",
         _e(desk_note),
@@ -446,7 +446,7 @@ def _email_shell(title: str, body_html: str, subtitle: str = "") -> str:
       <table role="presentation" width="640" cellpadding="0" cellspacing="0"
              style="width:640px;max-width:94%;background:#FFFFFF;border:1px solid #D8E0E8;">
         <tr><td style="background:#0B1E33;padding:14px 20px;">
-          <div style="color:#FFFFFF;font-size:17px;font-weight:bold;letter-spacing:1px;">TRADEXVM</div>
+          <div style="color:#FFFFFF;font-size:17px;font-weight:bold;letter-spacing:1px;">TRADEVMX</div>
           <div style="color:#8FA6BD;font-size:10px;letter-spacing:2px;margin-top:3px;">
             INSTITUTIONAL MARKET DESK &nbsp;|&nbsp; NSE / BSE &nbsp;|&nbsp; INR
           </div>
@@ -461,7 +461,7 @@ def _email_shell(title: str, body_html: str, subtitle: str = "") -> str:
         </td></tr>
         <tr><td style="background:#F3F6F9;border-top:1px solid #D8E0E8;padding:12px 22px;
                        color:#6B7785;font-size:10px;line-height:1.5;">
-          Generated automatically by TradeXVm from public market data. Educational research,
+          Generated automatically by TradeVMx from public market data. Educational research,
           not investment advice. Prices in INR.
         </td></tr>
       </table>
@@ -524,7 +524,7 @@ class AlertDispatcher:
 
         if max(s.severity for s in signals) >= self.settings.email_min_severity:
             subject = (
-                f"TradeXVm Alert | {snapshot.display_name} | {signals[0].label} | "
+                f"TradeVMx Alert | {snapshot.display_name} | {signals[0].label} | "
                 f"{snapshot.bias} | {snapshot.cmp:,.2f}"
             )
             html = _email_shell(
@@ -557,7 +557,7 @@ class AlertDispatcher:
 
     async def send_opening_brief(self, report: "ScanReport") -> None:
         text = (
-            f"\U0001f7e2 <b>TradeXVm is live</b> \u00b7 {report.created_at.strftime('%d %b %Y')}\n"
+            f"\U0001f7e2 <b>TradeVMx is live</b> \u00b7 {report.created_at.strftime('%d %b %Y')}\n"
             f"Session scan across {report.scanned} instruments.\n\n"
             + format_scan_summary(report, self.settings.alert_min_severity)
         )
@@ -568,7 +568,7 @@ class AlertDispatcher:
             subtitle=report.created_at.strftime("%d %b %Y %H:%M IST"),
         )
         await self.email.send_async(
-            f"TradeXVm Morning Brief | {report.created_at.strftime('%d %b %Y')}",
+            f"TradeVMx Morning Brief | {report.created_at.strftime('%d %b %Y')}",
             html,
             text_body=text,
         )
@@ -595,7 +595,7 @@ class AlertDispatcher:
             subtitle=report.created_at.strftime("%d %b %Y") + " \u00b7 NSE close",
         )
         await self.email.send_async(
-            f"TradeXVm EOD Wrap | {report.created_at.strftime('%d %b %Y')}",
+            f"TradeVMx EOD Wrap | {report.created_at.strftime('%d %b %Y')}",
             html,
             text_body=text,
             attachments=attachments,

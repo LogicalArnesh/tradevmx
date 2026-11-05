@@ -1,4 +1,4 @@
-"""TradeXVm :: institutional PDF research reports (ReportLab).
+"""TradeVMx :: institutional PDF research reports (ReportLab).
 
 Generates a multi-section A4 research note:
 
@@ -123,7 +123,7 @@ class ReportArtifact:
     path: Path
     filename: str
     buffer: io.BytesIO
-    title: str = "TradeXVm Research"
+    title: str = "TradeVMx Research"
     generated_at: datetime = field(default_factory=lambda: datetime.now(IST))
 
     def read(self) -> bytes:
@@ -164,7 +164,7 @@ class _NumberedCanvas(pdfcanvas.Canvas):
         self.drawString(
             16 * mm,
             10.3 * mm,
-            "TradeXVm Research  |  Prices in INR  |  Educational analysis, not investment advice.",
+            "TradeVMx Research  |  Prices in INR  |  Educational analysis, not investment advice.",
         )
         self.drawRightString(
             PAGE_WIDTH - 16 * mm, 10.3 * mm, f"Page {self._pageNumber} of {total}"
@@ -287,7 +287,7 @@ class ReportEngine:
         """Single-instrument research note."""
         slug = _slug(snapshot.display_name)
         stamp = snapshot.as_of.strftime("%Y%m%d_%H%M")
-        filename = f"TradeXVm_{slug}_{stamp}.pdf"
+        filename = f"TradeVMx_{slug}_{stamp}.pdf"
         story: list[Flowable] = self._instrument_story(snapshot, plan, include_page_header=True)
         artifact = self._build(
             story,
@@ -308,7 +308,7 @@ class ReportEngine:
         """Multi-instrument wrap-up (one page per instrument + summary)."""
         plans = plans or {}
         stamp = datetime.now(IST).strftime("%Y%m%d_%H%M")
-        filename = f"TradeXVm_{_slug(title)}_{stamp}.pdf"
+        filename = f"TradeVMx_{_slug(title)}_{stamp}.pdf"
 
         story: list[Flowable] = [self._document_header(title, f"{len(snapshots)} instruments")]
         story.append(Spacer(1, 2 * mm))
@@ -330,7 +330,7 @@ class ReportEngine:
             story,
             filename=filename,
             title=title,
-            subject=f"TradeXVm {title}",
+            subject=f"TradeVMx {title}",
         )
         LOGGER.info("Rendered portfolio %s (%.1f KB)", artifact.filename, artifact.size_kb)
         return artifact
@@ -346,9 +346,9 @@ class ReportEngine:
             topMargin=25 * mm,
             bottomMargin=19 * mm,
             title=title,
-            author="TradeXVm Market Desk",
+            author="TradeVMx Market Desk",
             subject=subject,
-            creator="TradeXVm",
+            creator="TradeVMx",
         )
         frame = Frame(
             doc.leftMargin,
@@ -382,7 +382,7 @@ class ReportEngine:
         canvas.rect(0, PAGE_HEIGHT - 16 * mm, PAGE_WIDTH, 16 * mm, stroke=0, fill=1)
         canvas.setFillColor(WHITE)
         canvas.setFont("Helvetica-Bold", 10.5)
-        canvas.drawString(16 * mm, PAGE_HEIGHT - 10 * mm, "TRADEXVM")
+        canvas.drawString(16 * mm, PAGE_HEIGHT - 10 * mm, "TRADEVMX")
         canvas.setFillColor(colors.HexColor("#8FA6BD"))
         canvas.setFont("Helvetica", 7)
         canvas.drawRightString(
@@ -399,7 +399,7 @@ class ReportEngine:
     def _document_header(self, title: str, subtitle: str) -> Flowable:
         now = datetime.now(IST)
         left = [
-            Paragraph("TRADEXVM RESEARCH", self._styles["Overline"]),
+            Paragraph("TRADEVMX RESEARCH", self._styles["Overline"]),
             Paragraph(_safe(title), self._styles["DocTitle"]),
             Paragraph(
                 f"{_safe(subtitle)} &nbsp;|&nbsp; Generated {now.strftime('%d %b %Y, %H:%M')} IST",
