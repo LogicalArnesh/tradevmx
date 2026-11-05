@@ -18,20 +18,20 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p dist/tradexvm
+          mkdir -p dist/tradevmx
           # Only tracked files ship: no .env, no logs, no reports, no venv.
-          git archive --format=tar HEAD | tar -x -C dist/tradexvm
-          printf '%s\n' "$GITHUB_REF_NAME" > dist/tradexvm/VERSION
-          ( cd dist && zip -qr "tradexvm-${version}.zip" tradexvm )
+          git archive --format=tar HEAD | tar -x -C dist/tradevmx
+          printf '%s\n' "$GITHUB_REF_NAME" > dist/tradevmx/VERSION
+          ( cd dist && zip -qr "tradevmx-${version}.zip" tradevmx )
           ls -lh dist
 
       - name: Publish the GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/tradexvm-*.zip
+          files: dist/tradevmx-*.zip
           generate_release_notes: true
           body: |
-            Download `tradexvm-${{ github.ref_name }}.zip`, unzip it, and run
-            `run_tradexvm.bat` (Windows) or `./run_tradexvm.sh` (macOS/Linux).
+            Download `tradevmx-${{ github.ref_name }}.zip`, unzip it, and run
+            `run_tradevmx.bat` (Windows) or `./run_tradevmx.sh` (macOS/Linux).
             Existing installs can drop the new files over the old folder; your
             `.env` is preserved.

@@ -1,4 +1,4 @@
-"""TradeXVm :: Telegram front-end for the shared sentinel engine.
+"""TradeVMx :: Telegram front-end for the shared sentinel engine.
 
 The autonomous work (sweeps, brief, wrap) lives in ``sentinel.py``; this module
 is only the chat surface: commands, authorization, and formatting. That keeps
@@ -50,7 +50,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
 )
 
 
-class TradeXVmBot:
+class TradeVMxBot:
     """Telegram surface over :class:`sentinel.Sentinel`."""
 
     def __init__(self, settings: Settings) -> None:
@@ -107,7 +107,7 @@ class TradeXVmBot:
             )
         self.sentinel.start()
         LOGGER.info(
-            "TradeXVm bot online | chats=%s | universe=%s | sweep=%smin | groq=%s | email=%s",
+            "TradeVMx bot online | chats=%s | universe=%s | sweep=%smin | groq=%s | email=%s",
             len(self.settings.telegram_chat_ids),
             len(self.settings.watchlist),
             self.settings.scan_interval_minutes,
@@ -118,7 +118,7 @@ class TradeXVmBot:
     async def _post_shutdown(self, application: Application) -> None:
         self.sentinel.stop()
         self.sentinel.close()
-        LOGGER.info("TradeXVm bot stopped.")
+        LOGGER.info("TradeVMx bot stopped.")
 
     def run(self) -> None:
         application = self.build_application()
@@ -183,7 +183,7 @@ class TradeXVmBot:
             return
         await self._reply(
             update,
-            "\U0001f5e1 <b>TradeXVm online</b>\n"
+            "\U0001f5e1 <b>TradeVMx online</b>\n"
             "Autonomous NSE desk: VWAP, volume shocks, Open=High/Low and SMC order-block "
             "retests on 5m/15m, with Groq trade plans.\n\n"
             f"\u2022 Scans every {self.settings.scan_interval_minutes} min, 09:15-15:30 IST\n"
@@ -197,7 +197,7 @@ class TradeXVmBot:
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
             return
-        lines = ["<b>TradeXVm commands</b>"]
+        lines = ["<b>TradeVMx commands</b>"]
         lines.extend(f"/{command} \u2014 {description}" for command, description in COMMANDS)
         lines.append("\nAny NSE ticker works with /live and /report (e.g. <code>TATAMOTORS</code>).")
         await self._reply(update, "\n".join(lines))
@@ -289,7 +289,7 @@ class TradeXVmBot:
         now = datetime.now(IST)
         schedule = self.sentinel.schedule_table()
         lines = [
-            "<b>TradeXVm status</b>",
+            "<b>TradeVMx status</b>",
             f"IST clock: {now.strftime('%a %d %b %Y, %H:%M:%S')}",
             f"Market: <b>{self.settings.market_phase(now)}</b> "
             f"({'open' if self.settings.is_market_open(now) else 'closed'})",
@@ -358,14 +358,14 @@ def main() -> int:
     try:
         settings.require_runnable()
     except ConfigError as exc:
-        LOGGER.error("TradeXVm cannot start: %s", exc)
+        LOGGER.error("TradeVMx cannot start: %s", exc)
         LOGGER.error(
             "Create .env from .env.example (or open the desktop console) and set "
             "TELEGRAM_BOT_TOKEN plus at least one TELEGRAM_CHAT_ID, then restart."
         )
         return 2
 
-    bot = TradeXVmBot(settings)
+    bot = TradeVMxBot(settings)
     try:
         bot.run()
     except KeyboardInterrupt:  # pragma: no cover - interactive stop

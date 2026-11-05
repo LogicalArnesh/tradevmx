@@ -1,4 +1,4 @@
-"""TradeXVm :: in-app update checks.
+"""TradeVMx :: in-app update checks.
 
 The console is local-first, so this module is deliberately forgiving: a missing
 repository, no published releases, no network or a rate limit all resolve to a
@@ -52,7 +52,7 @@ def _fetch(repo: str, timeout: float) -> dict[str, object]:
         RELEASES_URL.format(repo=repo),
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "TradeXVm-updater",
+            "User-Agent": "TradeVMx-updater",
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:

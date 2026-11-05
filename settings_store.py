@@ -1,4 +1,4 @@
-"""TradeXVm desktop :: environment-backed settings store.
+"""TradeVMx desktop :: environment-backed settings store.
 
 The desktop app lets the operator paste API keys and tune risk thresholds, so
 something has to write ``.env`` without destroying comments, ordering or keys it
@@ -245,7 +245,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         label="Update repository",
         group="desktop",
         kind="text",
-        placeholder="yourname/tradexvm",
+        placeholder="yourname/tradevmx",
         help="GitHub owner/repo used for in-app update checks. Leave empty to disable them.",
     ),
     FieldSpec(key="SETUP_DONE", label="Setup completed", group="desktop", kind="bool", hidden=True),

@@ -1,4 +1,4 @@
-"""TradeXVm desktop :: local notification extras.
+"""TradeVMx desktop :: local notification extras.
 
 Both channels are strictly optional and imported lazily:
 
@@ -58,9 +58,9 @@ class LocalNotifier:
             from plyer import notification  # type: ignore[import-not-found]
 
             notification.notify(
-                title=title or "TradeXVm",
+                title=title or "TradeVMx",
                 message=message or "Alert",
-                app_name="TradeXVm",
+                app_name="TradeVMx",
                 timeout=8,
             )
         except Exception as exc:  # noqa: BLE001 - optional dependency / no backend

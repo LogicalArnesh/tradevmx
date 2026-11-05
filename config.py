@@ -1,4 +1,4 @@
-"""TradeXVm :: configuration layer.
+"""TradeVMx :: configuration layer.
 
 Single source of truth for credentials, watchlist, detector thresholds and
 market-session rules.  Everything is resolved once from the environment and
@@ -521,7 +521,7 @@ def configure_logging(settings: Settings | None = None) -> None:
     cfg = settings or get_settings()
     level = getattr(logging, cfg.log_level, logging.INFO)
     root = logging.getLogger()
-    if getattr(root, "_tradexvm_configured", False):
+    if getattr(root, "_tradevmx_configured", False):
         root.setLevel(level)
         return
 
@@ -537,7 +537,7 @@ def configure_logging(settings: Settings | None = None) -> None:
 
     try:
         file_handler = RotatingFileHandler(
-            cfg.log_dir / "tradexvm.log",
+            cfg.log_dir / "tradevmx.log",
             maxBytes=cfg.log_max_bytes,
             backupCount=cfg.log_backup_count,
             encoding="utf-8",
@@ -553,7 +553,7 @@ def configure_logging(settings: Settings | None = None) -> None:
     # report failures ourselves.
     for noisy in ("yfinance", "peewee", "urllib3", "nsepython"):
         logging.getLogger(noisy).setLevel(logging.ERROR)
-    root._tradexvm_configured = True  # type: ignore[attr-defined]
+    root._tradevmx_configured = True  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":  # pragma: no cover - manual config check

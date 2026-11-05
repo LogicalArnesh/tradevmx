@@ -1,4 +1,4 @@
-# TradeXVm - autonomous Indian market desk
+# TradeVMx - autonomous Indian market desk
 # Python 3.11+
 yfinance>=0.2.40
 nsepython>=2.95
