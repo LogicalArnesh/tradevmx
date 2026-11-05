@@ -266,7 +266,7 @@ DEFAULTS: dict[str, str] = {
     "VOICE_ALERTS": "false",
     "AUTO_ARM": "true",
     "SETUP_DONE": "false",
-    "UPDATE_REPO": "",
+    "UPDATE_REPO": "LogicalArnesh/tradevmx",
 }
 
 

@@ -7,6 +7,7 @@ Gmail or Groq request is made.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -14,7 +15,7 @@ import pytest
 import settings_store
 from ai_engine import GroqBrain
 from app import DeskState, build_state, create_app
-from config import IST, get_settings
+from config import DEFAULT_UPDATE_REPO, IST, get_settings
 from market_scanner import MarketSnapshot, ScanReport, Signal
 
 
@@ -304,11 +305,19 @@ def test_setup_flag_is_hidden_but_writable(client, env_file) -> None:
     assert response.get_json()["state"]["setup"]["needs_setup"] is False
 
 
-def test_update_endpoint_without_repo_is_quiet(client) -> None:
+def test_update_endpoint_without_repo_is_quiet(client, desk) -> None:
+    # A stale or hand-cleared setting must not produce a scary banner.
+    desk.settings = replace(desk.settings, update_repo="")
     payload = client.get("/api/update").get_json()
     assert payload["configured"] is False
     assert payload["available"] is False
     assert payload["current"]
+
+
+def test_update_repo_defaults_to_upstream(desk) -> None:
+    # A freshly unzipped release must still check for new versions.
+    assert desk.settings.update_repo == DEFAULT_UPDATE_REPO
+    assert "/" in DEFAULT_UPDATE_REPO
 
 
 def test_build_state_without_scan_is_safe(desk) -> None:
