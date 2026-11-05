@@ -1,0 +1,37 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the download bundle
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/tradexvm
+          # Only tracked files ship: no .env, no logs, no reports, no venv.
+          git archive --format=tar HEAD | tar -x -C dist/tradexvm
+          printf '%s\n' "$GITHUB_REF_NAME" > dist/tradexvm/VERSION
+          ( cd dist && zip -qr "tradexvm-${version}.zip" tradexvm )
+          ls -lh dist
+
+      - name: Publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/tradexvm-*.zip
+          generate_release_notes: true
+          body: |
+            Download `tradexvm-${{ github.ref_name }}.zip`, unzip it, and run
+            `run_tradexvm.bat` (Windows) or `./run_tradexvm.sh` (macOS/Linux).
+            Existing installs can drop the new files over the old folder; your
+            `.env` is preserved.

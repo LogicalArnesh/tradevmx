@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 import settings_store
+import updater
 from ai_engine import GroqBrain
 from alerts import AlertDispatcher
 from config import IST, Settings, UnknownInstrument, configure_logging, get_settings
@@ -39,10 +40,10 @@ from market_scanner import MarketScanner, ScanReport
 from notify import LocalNotifier
 from report_engine import ReportEngine
 from sentinel import Sentinel, SentinelEvent
+from version import __version__ as APP_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
-APP_VERSION = "2.0.0"
 DEFAULT_PORT = 8765
 
 
@@ -190,6 +191,10 @@ def build_state(desk: DeskState) -> dict[str, Any]:
             "last_scan_label": last_scan.strftime("%H:%M:%S") if last_scan else None,
             "last_alert_count": desk.sentinel.last_alert_count,
             "alert_floor": desk.settings.alert_min_severity,
+        },
+        "setup": {
+            "needs_setup": not desk.settings.setup_done,
+            "done": desk.settings.setup_done,
         },
         "readiness": {
             "telegram": desk.settings.telegram_ready,
@@ -405,6 +410,14 @@ def create_app(
             )
 
         return jsonify({"error": "unknown channel"}), 400
+
+    @app.get("/api/update")
+    def api_update() -> Any:
+        """Cached GitHub release check; safe to poll, never raises."""
+        force = request.args.get("force", "").lower() in {"1", "true", "yes"}
+        return jsonify(
+            updater.check_cached(desk.settings.update_repo, APP_VERSION, force=force)
+        )
 
     @app.get("/api/logs")
     def api_logs() -> Any:

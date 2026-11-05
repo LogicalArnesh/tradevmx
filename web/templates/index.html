@@ -51,6 +51,8 @@
         <div id="readiness" class="chips" aria-label="Channel status"></div>
       </header>
 
+      <div id="update-banner" class="banner hidden" role="status"></div>
+
       <section id="view-dashboard" class="view">
         <div class="panel controls">
           <button id="toggle-sentinel" class="btn primary" type="button">Arm sentinel</button>
@@ -91,6 +93,7 @@
           <div class="panel-head">
             <h2>Configuration</h2>
             <span id="env-path" class="muted small"></span>
+            <button id="start-setup" class="btn ghost small" type="button">Setup guide</button>
           </div>
           <p class="muted small intro">
             Saved to <code>.env</code> on this PC, atomically, and applied immediately without a
@@ -114,6 +117,23 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <div id="setup" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="setup-title">Let's connect your desk</h2>
+        <p class="muted small">
+          Paste the keys you already have. Everything is written to <code>.env</code> on this PC and
+          only ever leaves it to the services you enable. You can skip and edit later.
+        </p>
+      </div>
+      <div id="setup-body" class="modal-body"></div>
+      <div class="modal-foot">
+        <button id="setup-save" class="btn primary" type="button">Save &amp; arm the desk</button>
+        <button id="setup-skip" class="btn ghost" type="button">Later</button>
+      </div>
+    </div>
   </div>
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

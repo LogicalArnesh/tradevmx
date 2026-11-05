@@ -289,6 +289,28 @@ def test_next_sweep_skips_out_of_session_cron_slots(desk) -> None:
     assert after_close is not None and after_close.strftime("%a %H:%M") == "Tue 09:15"
 
 
+def test_setup_flag_is_hidden_but_writable(client, env_file) -> None:
+    snap = client.get("/api/settings").get_json()
+    assert all(field["key"] != "SETUP_DONE" for field in snap["fields"])
+    assert client.get("/api/state").get_json()["setup"]["needs_setup"] is True
+
+    response = client.post(
+        "/api/settings",
+        json={"values": {"SETUP_DONE": True}},
+        headers={"X-TradeXVm-Token": "test-token"},
+    )
+    assert response.status_code == 200
+    assert "SETUP_DONE=true" in env_file.read_text(encoding="utf-8")
+    assert response.get_json()["state"]["setup"]["needs_setup"] is False
+
+
+def test_update_endpoint_without_repo_is_quiet(client) -> None:
+    payload = client.get("/api/update").get_json()
+    assert payload["configured"] is False
+    assert payload["available"] is False
+    assert payload["current"]
+
+
 def test_build_state_without_scan_is_safe(desk) -> None:
     payload = build_state(desk)
     assert payload["market"]["scanned"] == 0
