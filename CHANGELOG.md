@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2.0 — always-on digest, auto-start, updates
+
+* **Always-on watchlist digest.** A scheduler job (`watchlist_digest`) runs every
+  `DIGEST_INTERVAL_MINUTES` (default 60) between 09:15 and 15:30 IST on trading
+  days. It re-scans the watchlist, builds a branded PDF and pushes it to every
+  ready channel: Gmail with the PDF attached, plus a Telegram summary.
+  Toggle with `ENABLE_DIGEST`; "Email digest now" in Configuration does the same
+  on demand, and "Watchlist digest PDF" downloads it without sending anything.
+* **Digest PDF.** `studio.build_watchlist_brief` — logo, KPI strip, desk view,
+  a prediction table (entry band, stop, T1/T2, R:R), a mini price chart per
+  instrument and a sources page. Licence id and copyright on every page.
+* **Run at Windows startup.** `/api/autostart` adds or removes a Startup-folder
+  shortcut pointing at the new silent launcher `run_tradevmx_silent.vbs`, so the
+  desk is active from login with no console window. Non-Windows hosts get a clear
+  message instead of an error.
+* **Update check that is visible.** `/api/update?force=1` for an immediate check,
+  a "Check for updates" button, the running version shown in Configuration, the
+  current version written into `version.py`, and an automatic poll every 6 hours
+  on top of the background daily check.
+* New settings group **Digest**: `ENABLE_DIGEST`, `DIGEST_INTERVAL_MINUTES`.
+
 ## v1.1.1 — install fix
 
 * `requirements.txt` pinned the deprecated `webview` package, which needs GTK

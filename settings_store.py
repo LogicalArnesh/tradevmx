@@ -92,6 +92,11 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
         "Where PDFs are written and whose name appears on the licence block.",
     ),
     (
+        "digest",
+        "Always-on digest",
+        "Watchlist email/PDF while the market is live, so the desk keeps reporting without you.",
+    ),
+    (
         "desktop",
         "Desktop experience",
         "Local toasts and optional voice announcements. Both are optional extras.",
@@ -269,6 +274,22 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         placeholder="Your name or desk name",
         help="Printed on every PDF beside the licence id and copyright line.",
     ),
+    FieldSpec(
+        key="ENABLE_DIGEST",
+        label="Always-on digest",
+        group="digest",
+        kind="bool",
+        help="Send a watchlist digest with PDF to every ready channel during market hours.",
+    ),
+    FieldSpec(
+        key="DIGEST_INTERVAL_MINUTES",
+        label="Digest interval (minutes)",
+        group="digest",
+        kind="int",
+        minimum=15,
+        maximum=240,
+        help="60 by default. Only sends inside 09:15-15:30 IST on trading days.",
+    ),
     FieldSpec(key="SETUP_DONE", label="Setup completed", group="desktop", kind="bool", hidden=True),
     FieldSpec(key="LICENSE_ACCEPTED", label="Licence accepted", group="desktop", kind="bool", hidden=True),
 )
@@ -291,6 +312,8 @@ DEFAULTS: dict[str, str] = {
     "LICENSE_ACCEPTED": "false",
     "EXPORT_DIR": "",
     "OWNER_NAME": "",
+    "ENABLE_DIGEST": "true",
+    "DIGEST_INTERVAL_MINUTES": "60",
     "UPDATE_REPO": "LogicalArnesh/tradevmx",
 }
 

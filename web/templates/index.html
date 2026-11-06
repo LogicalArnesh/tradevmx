@@ -6,7 +6,7 @@
   <meta name="tradevmx-token" content="{{ token }}" />
   <title>TradeVMx · NSE Market Desk</title>
   <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/png" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ version|default('', true) }}" />
 </head>
 <body>
   <!-- native-window header (only visible inside the desktop window) -->
@@ -201,6 +201,8 @@
             <button class="btn ghost small" type="button" data-ask="Which stocks look strongest right now and why?">Strongest names</button>
             <button class="btn ghost small" type="button" data-ask="What is the risk into tomorrow's open?">Risk into tomorrow</button>
             <button id="daily-brief" class="btn primary small" type="button">Daily brief PDF</button>
+            <button id="digest-pdf" class="btn ghost small" type="button">Watchlist digest PDF</button>
+            <button id="digest-email" class="btn ghost small" type="button">Email digest now</button>
             <button id="create-shortcut" class="btn ghost small" type="button">Create desktop shortcut</button>
           </div>
           <form id="assistant-form" class="chat-input" autocomplete="off">
@@ -223,6 +225,12 @@
             restart. Secrets are stored on disk but never sent back to the window. Set the PDF
             export folder and report owner under <b>Reports &amp; export</b>.
           </p>
+          <div class="form-actions">
+            <span id="app-version" class="muted small">—</span>
+            <button id="check-update" class="btn ghost small" type="button">Check for updates</button>
+            <button id="autostart-toggle" class="btn ghost small" type="button">Run at Windows startup</button>
+            <span id="update-status" class="muted small"></span>
+          </div>
           <form id="settings-form" autocomplete="off"></form>
           <div class="form-actions">
             <button id="save-settings" class="btn primary" type="button">Save configuration</button>
@@ -263,6 +271,6 @@
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <noscript><p class="noscript">TradeVMx needs JavaScript enabled.</p></noscript>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v={{ version|default('', true) }}"></script>
 </body>
 </html>

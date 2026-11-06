@@ -50,6 +50,7 @@
   let allBars = [];
   let levels = { supports: [], resistances: [] };
   let book = null;
+  let autostartOn = false;
   let currentView = "studio";
   let symbolList = [];
   let autocomplete = null;
@@ -685,6 +686,119 @@
     }
   }
 
+  async function downloadPdf(path, fallbackName, onDone) {
+    const response = await fetch(path, {
+      headers: { "X-TradeVMx-Token": TOKEN },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      let detail = "download failed (" + response.status + ")";
+      try {
+        const payload = await response.json();
+        detail = payload.error || detail;
+      } catch (error) { /* not json */ }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = /filename="?([^";]+)"?/.exec(disposition);
+    link.href = url;
+    link.download = match ? match[1] : fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+    if (onDone) onDone();
+  }
+
+  async function digestPdf() {
+    const button = $("#digest-pdf");
+    const restore = setBusy(button, "Building…");
+    try {
+      await downloadPdf("/api/watchlist/digest", "TradeVMx_Watchlist_Digest.pdf", () =>
+        pushBubble("Watchlist digest exported — predictions, levels, mini charts and sources.", "bot"));
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      restore();
+    }
+  }
+
+  async function digestEmail() {
+    const button = $("#digest-email");
+    const restore = setBusy(button, "Sending…");
+    try {
+      const data = await api("/api/watchlist/digest", { method: "POST", body: { send: true } });
+      let detail;
+      if (data.ok) {
+        detail = "Digest sent" + (data.email ? " by email" : "") +
+          (data.telegram ? (data.email ? " and Telegram" : " to Telegram") : "") +
+          " · " + (data.pdf || "PDF");
+      } else {
+        detail = data.reason || "Nothing was sent — add a Telegram or Gmail channel in Configuration.";
+      }
+      toast(detail, data.ok ? "info" : "error");
+      pushBubble(detail, "bot");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      restore();
+    }
+  }
+
+  async function pollUpdate(force) {
+    try {
+      const data = await api("/api/update" + (force ? "?force=1" : ""));
+      const banner = $("#update-banner");
+      const status = $("#update-status");
+      if (banner) {
+        if (data && data.available) {
+          banner.classList.remove("hidden");
+          banner.innerHTML = '<span class="banner-dot"></span><span><b>v' + esc(data.latest) +
+            "</b> is available — this build is v" + esc(data.current) + ".</span>" +
+            '<a class="btn small" href="' + esc(data.url) +
+            '" target="_blank" rel="noopener noreferrer">Download</a>';
+        } else {
+          banner.classList.add("hidden");
+        }
+      }
+      if (status) {
+        status.textContent = data && data.available
+          ? "v" + data.latest + " available"
+          : "up to date · v" + ((data && data.current) || "");
+      }
+      if (force) {
+        toast(data && data.available
+          ? "v" + data.latest + " is available — use the banner to download."
+          : "You are on the latest version.");
+      }
+    } catch (error) {
+      if (force) toast(error.message, "error");
+    }
+  }
+
+  async function toggleAutostart() {
+    const button = $("#autostart-toggle");
+    if (!button) return;
+    const target = !autostartOn;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Working…";
+    try {
+      const data = await api("/api/autostart", { method: "POST", body: { enabled: target } });
+      toast(data.detail, data.ok ? "info" : "error");
+      if (data.ok) autostartOn = Boolean(data.enabled);
+      button.textContent = autostartOn ? "Remove from startup" : "Run at Windows startup";
+    } catch (error) {
+      button.textContent = original;
+      toast(error.message, "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   /* ------------------------------------------------------------ settings */
   function fieldControl(field) {
     const hint = field.help ? '<span class="hint">' + esc(field.help) + "</span>" : "";
@@ -927,6 +1041,10 @@
     $("#start-setup")?.addEventListener("click", () => openSetup(true));
     $("#license-accept")?.addEventListener("click", acceptLicence);
     $("#daily-brief")?.addEventListener("click", dailyBrief);
+    $("#digest-pdf")?.addEventListener("click", digestPdf);
+    $("#digest-email")?.addEventListener("click", digestEmail);
+    $("#check-update")?.addEventListener("click", () => pollUpdate(true));
+    $("#autostart-toggle")?.addEventListener("click", toggleAutostart);
     $("#create-shortcut")?.addEventListener("click", createShortcut);
     $("#trade-buy")?.addEventListener("click", () => trade("BUY"));
     $("#trade-sell")?.addEventListener("click", () => trade("SELL"));
@@ -1031,21 +1149,15 @@
     renderClock();
     const gateOpen = !(await checkLicence());
     await Promise.all([refresh(), loadSettings(), loadBook()]);
+    const versionEl = $("#app-version");
+    if (versionEl && state && state.app && state.app.version) {
+      versionEl.textContent = "v" + state.app.version;
+    }
     if (!gateOpen && state && state.setup && state.setup.needs_setup) {
       openSetup(false);
     }
-    try {
-      const update = await api("/api/update");
-      const banner = $("#update-banner");
-      if (update && update.available && banner) {
-        banner.classList.remove("hidden");
-        banner.innerHTML = '<span class="banner-dot"></span><span><b>v' + esc(update.latest) +
-          "</b> is available — this build is v" + esc(update.current) + ".</span>" +
-          '<a class="btn small" href="' + esc(update.url) + '" target="_blank" rel="noopener noreferrer">Download</a>';
-      }
-    } catch (error) {
-      /* update check is optional */
-    }
+    await pollUpdate(false);
+    window.setInterval(() => pollUpdate(false), 6 * 60 * 60 * 1000);
   }
 
   wire();

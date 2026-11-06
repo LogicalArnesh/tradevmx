@@ -1045,6 +1045,320 @@ def build_daily_brief(
     return {"path": str(path), "filename": filename, "bytes": size}
 
 
+def env_owner(env_path: Path | None = None) -> str:
+    """Report owner from ``.env`` (``OWNER_NAME``), empty when unset."""
+    try:
+        import settings_store
+
+        return (settings_store.read_env(env_path).get("OWNER_NAME") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _sparkline(values: Sequence[float], width: float, height: float, colour: tuple) -> Any:
+    """A tiny price polyline as a reportlab Drawing (no matplotlib)."""
+    from reportlab.graphics.shapes import Drawing, Line, PolyLine
+
+    drawing = Drawing(width, height)
+    drawing.add(Line(0, 0, width, 0, strokeColor=None, strokeWidth=0))
+    clean = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if len(clean) < 2:
+        return drawing
+    low, high = min(clean), max(clean)
+    span = (high - low) or 1.0
+    step = width / (len(clean) - 1)
+    points: list[float] = []
+    for index, value in enumerate(clean):
+        points.extend([index * step, (value - low) / span * (height - 2) + 1])
+    drawing.add(
+        PolyLine(
+            points,
+            strokeColor=colour,
+            strokeWidth=1.1,
+            fillColor=None,
+        )
+    )
+    return drawing
+
+
+def build_watchlist_brief(
+    rows: Sequence[dict[str, Any]],
+    bars_by_symbol: dict[str, Sequence[dict[str, Any]]] | None = None,
+    *,
+    out_dir: Path,
+    plans: dict[str, dict[str, Any]] | None = None,
+    owner: str = "",
+    commentary: str = "",
+    licence: str = LICENCE_ID,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Branded watchlist digest: predictions, mini charts and sources.
+
+    Designed to be short and readable: one page per dozen names at most, with a
+    sparkline per instrument so the brief is genuinely visual.
+    """
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_LEFT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            HRFlowable,
+            Image,
+            KeepTogether,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("reportlab is required for PDF export") from exc
+
+    when = now or datetime.now()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"TradeVMx_Watchlist_Digest_{when:%Y-%m-%d_%H%M}.pdf"
+    path = out_dir / filename
+
+    ink = colors.HexColor("#0b1220")
+    teal = colors.HexColor("#0f766e")
+    green = colors.HexColor("#12805c")
+    red = colors.HexColor("#b3261e")
+    slate = colors.HexColor("#64748b")
+    line = colors.HexColor("#d7dee8")
+
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("WTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+                           fontSize=18, leading=21, textColor=ink, alignment=TA_LEFT, spaceAfter=2)
+    sub = ParagraphStyle("WSub", parent=styles["Normal"], fontName="Helvetica", fontSize=9.2,
+                         leading=12.6, textColor=slate)
+    h2 = ParagraphStyle("WH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=11,
+                        leading=14.5, textColor=teal, spaceBefore=10, spaceAfter=4)
+    body = ParagraphStyle("WBody", parent=styles["Normal"], fontName="Helvetica", fontSize=9,
+                          leading=13, textColor=ink)
+    cell = ParagraphStyle("WCell", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8,
+                          leading=10, textColor=ink)
+    head_cell = ParagraphStyle("WHCell", parent=cell, fontName="Helvetica-Bold", textColor=colors.white)
+    foot = ParagraphStyle("WFoot", parent=styles["Normal"], fontName="Helvetica", fontSize=7.2,
+                          leading=9.6, textColor=slate)
+
+    plans = plans or {}
+    bars_by_symbol = bars_by_symbol or {}
+    listed = list(rows)[:14]
+    setups = [r for r in listed if str(r.get("verdict") or "").upper() not in {"", "NO TRADE"}]
+    above = [r for r in listed if (r.get("cmp") or 0) > (r.get("vwap") or 0)]
+
+    story: list[Any] = []
+    logo = None
+    if LOGO_PATH.exists():
+        try:
+            from PIL import Image as _PIL
+
+            with _PIL.open(LOGO_PATH) as probe:
+                probe.verify()
+            logo = LOGO_PATH
+        except Exception:  # noqa: BLE001
+            logo = None
+
+    header_text = [
+        Paragraph(f"{PRODUCT} · {TAGLINE}", sub),
+        Paragraph("Watchlist Digest", title),
+        Paragraph(when.strftime("%A, %d %B %Y · %H:%M IST") + (f" · {owner}" if owner else ""), sub),
+    ]
+    if logo is not None:
+        try:
+            table = Table([[Image(str(logo), width=24 * mm, height=24 * mm, kind="proportional"), header_text]],
+                          colWidths=[30 * mm, 140 * mm])
+            table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                       ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                       ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+            story.append(table)
+        except Exception:  # noqa: BLE001
+            story.extend(header_text)
+    else:
+        story.extend(header_text)
+    story.append(Spacer(1, 5))
+    story.append(HRFlowable(width="100%", thickness=1.1, color=teal, spaceAfter=7))
+
+    tiles = [["On watch", "Setups", "Above VWAP", "Window"],
+             [str(len(listed)), str(len(setups)),
+              f"{len(above)}/{len(listed)}" if listed else "—",
+              when.strftime("%H:%M") + " IST"]]
+    tile_table = Table(tiles, colWidths=[42 * mm, 42 * mm, 42 * mm, 44 * mm])
+    tile_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4f3")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), slate),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 1), (-1, 1), 12.5),
+        ("TEXTCOLOR", (0, 1), (-1, 1), ink),
+        ("GRID", (0, 0), (-1, -1), 0.4, line),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(tile_table)
+
+    if commentary:
+        story.append(Paragraph("Desk read", h2))
+        for para in [p.strip() for p in str(commentary).split("\n") if p.strip()][:6]:
+            story.append(Paragraph(para.replace("&", "&amp;"), body))
+
+    story.append(Paragraph("Predictions and levels", h2))
+    heads = ["Instrument", "CMP", "Chg", "Bias", "Plan", "Entry", "Stop", "T1 / T2", "Trend"]
+    data = [[Paragraph(h, head_cell) for h in heads]]
+    for row in listed:
+        plan = plans.get(row.get("symbol") or "") or {}
+        trend = [b.get("close") for b in (bars_by_symbol.get(row.get("symbol") or "") or [])][-40:]
+        up = (row.get("change_pct") or 0) >= 0
+        entry = "—"
+        if plan.get("entry_low") is not None and plan.get("entry_high") is not None:
+            entry = f"{_fmt(plan.get('entry_low'))}–{_fmt(plan.get('entry_high'))}"
+        data.append([
+            Paragraph(f"{row.get('name') or ''}<br/><font size=6.6 color='#64748b'>{row.get('symbol') or ''}</font>", cell),
+            Paragraph(_fmt(row.get("cmp")), cell),
+            Paragraph(_fmt(row.get("change_pct")), cell),
+            Paragraph(str(row.get("bias") or "—"), cell),
+            Paragraph(str(plan.get("verdict") or row.get("verdict") or "—"), cell),
+            Paragraph(entry, cell),
+            Paragraph(_fmt(plan.get("stop_loss")) if plan.get("stop_loss") is not None else "—", cell),
+            Paragraph(
+                (f"{_fmt(plan.get('target_1'))} / {_fmt(plan.get('target_2'))}")
+                if plan.get("target_1") is not None else "—", cell),
+            _sparkline(trend, 30 * mm, 8 * mm, green if up else red),
+        ])
+    if len(data) == 1:
+        story.append(Paragraph("No sweep data yet — arm the desk to populate the digest.", body))
+    else:
+        widths = [34 * mm, 17 * mm, 13 * mm, 17 * mm, 16 * mm, 22 * mm, 15 * mm, 22 * mm, 32 * mm]
+        table = Table(data, colWidths=widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), teal),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+            ("GRID", (0, 0), (-1, -1), 0.3, line),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(table)
+
+    story.append(Paragraph("Signals worth acting on", h2))
+    lines_out: list[str] = []
+    for row in listed:
+        for signal in (row.get("signals") or [])[:2]:
+            if int(signal.get("severity") or 0) >= 3:
+                lines_out.append(
+                    f"<b>{row.get('name')}</b> · {signal.get('label')} "
+                    f"({signal.get('timeframe')}, {signal.get('severity')}/5) — {signal.get('detail') or ''}"
+                )
+    if lines_out:
+        for text_line in lines_out[:10]:
+            story.append(Paragraph("• " + text_line, body))
+            story.append(Spacer(1, 1.5))
+    else:
+        story.append(Paragraph("No setup at or above the severity floor right now.", body))
+
+    story.append(Paragraph("Sources &amp; method", h2))
+    feeds = sorted({str(r.get("ltp_source") or "feed") for r in listed})
+    method = [
+        f"Price feed: {', '.join(feeds)} (yfinance intraday OHLCV, NSE spot overlay where available).",
+        f"Sweep: {len(listed)} instruments on the {when.strftime('%H:%M')} IST pass; "
+        "VWAP is session-anchored, ATR is 14-bar, structure is HH/HL vs LH/LL.",
+        "Plans are rule-based ATR targets, upgraded by the language model only when a Groq key is configured.",
+        "Signal severities are 1-5; this digest lists 3 and above.",
+        "Levels are computed from swing pivots and order blocks, not from third-party level services.",
+    ]
+    for item in method:
+        story.append(Paragraph("• " + item.replace("&", "&amp;"), foot))
+        story.append(Spacer(1, 1.5))
+
+    def _decorate(canvas: Any, doc: Any) -> None:
+        canvas.saveState()
+        width, height = A4
+        canvas.setStrokeColor(line)
+        canvas.setLineWidth(0.6)
+        canvas.line(18 * mm, 16 * mm, width - 18 * mm, 16 * mm)
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(slate)
+        canvas.drawString(18 * mm, 11.4 * mm, f"{PRODUCT} · {COPYRIGHT}")
+        canvas.drawCentredString(width / 2, 11.4 * mm, f"Licence {licence}")
+        canvas.drawRightString(width - 18 * mm, 11.4 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        str(path), pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=16 * mm, bottomMargin=20 * mm,
+        title=f"{PRODUCT} Watchlist Digest {when:%Y-%m-%d}",
+        author=owner or PRODUCT, subject="NSE watchlist digest",
+    )
+    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
+    return {"path": str(path), "filename": filename, "bytes": path.stat().st_size if path.exists() else 0}
+
+
+def ensure_autostart(enabled: bool, target: Path | None = None) -> dict[str, Any]:
+    """Add or remove TradeVMx from the Windows startup folder."""
+    target = Path(target or BASE_DIR)
+    if os.name != "nt":
+        return {
+            "ok": False,
+            "enabled": False,
+            "platform": os.name,
+            "detail": "Auto-start is Windows-only here; on Linux use install-autostart.sh.",
+        }
+    appdata = os.environ.get("APPDATA") or str(Path(os.path.expanduser("~") ) / "AppData" / "Roaming")
+    startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    link = startup / "TradeVMx.lnk"
+    try:
+        startup.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"ok": False, "enabled": not enabled, "detail": f"Startup folder unavailable: {exc}"}
+
+    if not enabled:
+        try:
+            if link.exists():
+                link.unlink()
+                return {"ok": True, "enabled": False, "detail": "Removed from Windows startup."}
+        except OSError as exc:
+            return {"ok": False, "enabled": True, "detail": f"Could not remove: {exc}"}
+        return {"ok": True, "enabled": False, "detail": "Was not in Windows startup."}
+
+    silent = target / "run_tradevmx_silent.vbs"
+    launcher = target / "run_tradevmx.bat"
+    if silent.exists():
+        exe, args = "wscript.exe", f'"{silent}"'
+    elif launcher.exists():
+        exe, args = str(launcher), ""
+    else:
+        return {"ok": False, "enabled": False, "detail": "run_tradevmx.bat not found next to the app."}
+
+    script = (
+        "$ws = New-Object -ComObject WScript.Shell; "
+        f"$s = $ws.CreateShortcut('{link}'); "
+        f"$s.TargetPath = '{exe}'; "
+        f"$s.Arguments = '{args}'; "
+        f"$s.WorkingDirectory = '{target}'; "
+        "$s.Description = 'TradeVMx - start the desk at login'; "
+        f"$s.IconLocation = '{(target / 'web' / 'static' / 'logo.ico')}'; "
+        "$s.Save()"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=25,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode == 0 and link.exists():
+            return {"ok": True, "enabled": True, "path": str(link),
+                    "detail": "TradeVMx will start automatically at Windows login."}
+        return {"ok": False, "enabled": False,
+                "detail": (completed.stderr or "PowerShell could not write the startup shortcut.").strip()[:220]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "enabled": False, "detail": f"Auto-start failed: {exc}"}
+
+
 def licence_text() -> dict[str, str]:
     return {
         "product": PRODUCT,

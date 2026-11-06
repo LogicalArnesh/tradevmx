@@ -290,6 +290,10 @@ class Settings:
     email_min_severity: int = 4
     alert_cooldown_minutes: int = 45
 
+    # always-on digest
+    enable_digest: bool = True
+    digest_interval_minutes: int = 60
+
     # desktop experience
     desktop_toast: bool = True
     voice_alerts: bool = False
@@ -342,6 +346,8 @@ class Settings:
             alert_min_severity=min(5, max(1, _env_int("ALERT_MIN_SEVERITY", 3))),
             email_min_severity=min(5, max(1, _env_int("EMAIL_MIN_SEVERITY", 4))),
             alert_cooldown_minutes=max(0, _env_int("ALERT_COOLDOWN_MINUTES", 45)),
+            enable_digest=_env_bool("ENABLE_DIGEST", True),
+            digest_interval_minutes=max(15, min(_env_int("DIGEST_INTERVAL_MINUTES", 60), 240)),
             desktop_toast=_env_bool("DESKTOP_TOAST", True),
             voice_alerts=_env_bool("VOICE_ALERTS", False),
             auto_arm=_env_bool("AUTO_ARM", True),

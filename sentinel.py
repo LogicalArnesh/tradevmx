@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Sequence
@@ -35,6 +36,8 @@ from config import IST, Settings, get_settings
 from market_scanner import MarketScanner, MarketSnapshot, ScanReport
 from notify import LocalNotifier
 from report_engine import ReportArtifact, ReportEngine
+
+import studio
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,6 +198,15 @@ class Sentinel:
             CronTrigger(day_of_week="mon-fri", hour=eod.hour, minute=eod.minute, timezone=IST),
             id="eod_wrap",
             name="End of day wrap",
+            replace_existing=True,
+        )
+        digest_interval = max(15, min(int(self.settings.digest_interval_minutes or 60), 240))
+        digest_minute = "0" if digest_interval >= 60 else f"*/{digest_interval}"
+        self._scheduler.add_job(
+            self._guarded_digest,
+            CronTrigger(day_of_week="mon-fri", hour="9-15", minute=digest_minute, timezone=IST),
+            id="watchlist_digest",
+            name="Watchlist digest",
             replace_existing=True,
         )
 
@@ -359,6 +371,159 @@ class Sentinel:
         )
         return artifact
 
+    # ------------------------------------------------------------- digest
+    def cycle_watchlist_digest(self) -> dict[str, Any]:
+        """Build the watchlist digest PDF and push it to every ready channel.
+
+        Runs on the scheduler during market hours; also callable on demand from
+        the desktop console so "Email digest now" behaves identically.
+        """
+        if not self.settings.enable_digest:
+            return {"ok": False, "reason": "digest is switched off in Configuration"}
+        if not self.settings.is_market_open():
+            return {"ok": False, "reason": "market is closed - digests run 09:15-15:30 IST"}
+
+        report = self._report or self.scan(force=True)
+        snapshots = list(report.snapshots) if report else []
+        if not snapshots:
+            return {"ok": False, "reason": "no market data in this sweep"}
+
+        rows: list[dict[str, Any]] = []
+        plan_payload: dict[str, dict[str, Any]] = {}
+        bars: dict[str, list[dict[str, Any]]] = {}
+        for snapshot in snapshots[:14]:
+            plan = self._plans.get(snapshot.symbol)
+            if plan is not None:
+                plan_payload[snapshot.symbol] = {
+                    "verdict": plan.verdict,
+                    "entry_low": plan.entry_low,
+                    "entry_high": plan.entry_high,
+                    "stop_loss": plan.stop_loss,
+                    "target_1": plan.target_1,
+                    "target_2": plan.target_2,
+                    "risk_reward": plan.risk_reward,
+                }
+            rows.append(
+                {
+                    "symbol": snapshot.symbol,
+                    "name": snapshot.display_name,
+                    "cmp": snapshot.cmp,
+                    "change_pct": snapshot.change_pct,
+                    "bias": snapshot.bias,
+                    "structure": snapshot.structure,
+                    "vwap": snapshot.vwap,
+                    "verdict": plan.verdict if plan else None,
+                    "ltp_source": snapshot.ltp_source,
+                    "signals": [
+                        {
+                            "label": signal.label,
+                            "timeframe": signal.timeframe,
+                            "severity": signal.severity,
+                            "detail": signal.detail,
+                        }
+                        for signal in sorted(snapshot.signals, key=lambda s: -s.severity)[:3]
+                    ],
+                }
+            )
+            try:
+                bars[snapshot.symbol] = studio.history_bars(
+                    snapshot.symbol, self.settings.scan_timeframe, 60
+                ).get("bars", [])
+            except Exception:  # noqa: BLE001 - a chart is optional
+                bars[snapshot.symbol] = []
+
+        out_dir = studio.resolve_export_dir(None, self.settings.report_dir)
+        try:
+            artifact = studio.build_watchlist_brief(
+                rows,
+                bars,
+                out_dir=out_dir,
+                plans=plan_payload,
+                owner=studio.env_owner(),
+            )
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the UI
+            LOGGER.exception("Watchlist digest PDF failed: %s", exc)
+            return {"ok": False, "reason": f"pdf failed: {exc}"}
+
+        header_cells = "".join(
+            f"<th style='text-align:left;padding:5px'>{label}</th>"
+            for label in ("Instrument", "CMP", "Chg", "Bias", "Plan")
+        )
+        body_rows = "".join(
+            "<tr>"
+            f"<td style='padding:5px'>{row['name']}</td>"
+            f"<td style='padding:5px'>{row['cmp']:,.2f}</td>"
+            f"<td style='padding:5px'>{row['change_pct']:+.2f}%</td>"
+            f"<td style='padding:5px'>{row['bias']}</td>"
+            f"<td style='padding:5px'>{plan_payload.get(row['symbol'], {}).get('verdict') or row.get('verdict') or '-'}</td>"
+            "</tr>"
+            for row in rows
+        )
+        html = (
+            f"<h2 style='margin:0 0 6px'>{len(rows)} instruments · {len(plan_payload)} plans</h2>"
+            "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse;"
+            "font-family:Arial,Helvetica,sans-serif;font-size:12px;border:1px solid #d7dee8'>"
+            f"<tr style='background:#0f766e;color:#fff'>{header_cells}</tr>{body_rows}</table>"
+            "<p style='font-size:11px;color:#64748b;margin-top:8px'>"
+            "Full PDF attached: predictions, entry/stop/targets, mini charts and data sources.</p>"
+        )
+        text_body = "\n".join(
+            f"{row['name']}: {row['cmp']:,.2f} ({row['change_pct']:+.2f}%) {row['bias']} "
+            f"{plan_payload.get(row['symbol'], {}).get('verdict') or ''}" for row in rows
+        )
+        subject = f"TradeVMx digest · {datetime.now(IST):%H:%M} IST · {len(plan_payload)} setups"
+
+        email_ok = False
+        telegram_ok = False
+        if self.settings.email_ready:
+            try:
+                email_ok = bool(
+                    _run(
+                        self.dispatcher.email.send_async(
+                            subject,
+                            html,
+                            text_body=text_body,
+                            attachments=(Path(artifact["path"]),),
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 - one channel must not block the other
+                LOGGER.exception("Digest email failed")
+        if self.settings.telegram_ready:
+            try:
+                delivered = _run(
+                    self.dispatcher.telegram.broadcast(
+                        f"\U0001f4c8 <b>TradeVMx digest</b> · {datetime.now(IST):%H:%M} IST\n"
+                        + "\n".join(
+                            f"\u2022 <b>{row['name']}</b> {row['cmp']:,.2f} ({row['change_pct']:+.2f}%) "
+                            f"{row['bias']}"
+                            for row in rows[:10]
+                        )
+                    )
+                )
+                telegram_ok = bool(delivered)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Digest Telegram push failed")
+
+        self._emit(
+            SentinelEvent(
+                datetime.now(IST),
+                "info" if (email_ok or telegram_ok) else "error",
+                "Watchlist digest " + ("delivered" if (email_ok or telegram_ok) else "not delivered"),
+                f"{artifact['filename']} · email {'yes' if email_ok else 'no'} · telegram {'yes' if telegram_ok else 'no'}",
+                kind="brief",
+            )
+        )
+        return {
+            "ok": bool(email_ok or telegram_ok),
+            "email": email_ok,
+            "telegram": telegram_ok,
+            "pdf": artifact["filename"],
+            "path": artifact["path"],
+            "rows": len(rows),
+            "plans": len(plan_payload),
+        }
+
     # ------------------------------------------------------------- report
     def build_report(self, symbol: str) -> tuple[ReportArtifact, TradePlan, MarketSnapshot]:
         instrument = self.settings.resolve_instrument(symbol)
@@ -409,3 +574,6 @@ class Sentinel:
 
     def _guarded_eod(self) -> None:
         self._guarded(self.cycle_eod)
+
+    def _guarded_digest(self) -> None:
+        self._guarded(self.cycle_watchlist_digest)

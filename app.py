@@ -839,6 +839,66 @@ def create_app(
     def api_shortcut() -> Any:
         return jsonify(studio.ensure_shortcut())
 
+    def _digest_inputs() -> tuple[
+        list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]
+    ]:
+        rows = (build_state(desk).get("market") or {}).get("rows") or []
+        plans: dict[str, dict[str, Any]] = {}
+        for symbol, plan in desk.sentinel.latest_plans().items():
+            plans[symbol] = {
+                "verdict": plan.verdict,
+                "entry_low": plan.entry_low,
+                "entry_high": plan.entry_high,
+                "stop_loss": plan.stop_loss,
+                "target_1": plan.target_1,
+                "target_2": plan.target_2,
+                "risk_reward": plan.risk_reward,
+            }
+        bars: dict[str, list[dict[str, Any]]] = {}
+        for row in rows[:14]:
+            try:
+                bars[row["symbol"]] = studio.history_bars(
+                    row["symbol"], desk.settings.scan_timeframe, 60
+                ).get("bars", [])
+            except Exception:  # noqa: BLE001 - charts are optional
+                bars[row["symbol"]] = []
+        return rows, plans, bars
+
+    @app.get("/api/watchlist/digest")
+    def api_watchlist_digest() -> Any:
+        rows, plans, bars = _digest_inputs()
+        if not rows:
+            return jsonify({"error": "no sweep yet - press Scan now, then export the digest"}), 409
+        out_dir = studio.resolve_export_dir(desk.env_path, desk.settings.report_dir)
+        try:
+            artifact = studio.build_watchlist_brief(
+                rows,
+                bars,
+                out_dir=out_dir,
+                plans=plans,
+                owner=studio.env_owner(desk.env_path),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("digest failed: %s", exc)
+            return jsonify({"error": f"digest failed: {exc}"}), 502
+        return send_file(
+            artifact["path"],
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=artifact["filename"],
+        )
+
+    @app.post("/api/watchlist/digest")
+    @require_token
+    def api_watchlist_digest_send() -> Any:
+        return jsonify(desk.sentinel.cycle_watchlist_digest())
+
+    @app.post("/api/autostart")
+    @require_token
+    def api_autostart() -> Any:
+        payload = request.get_json(silent=True) or {}
+        return jsonify(studio.ensure_autostart(bool(payload.get("enabled", True))))
+
     @app.get("/api/license")
     def api_license() -> Any:
         payload = studio.licence_text()

@@ -569,3 +569,29 @@ python -m venv .venv
 ```
 
 The windowed build lands in `dist\TradeVMx\TradeVMx.exe` (no console window).
+
+## 15. Always-on digest, auto-start and updates — v1.2.0
+
+**Digest.** While the desk runs, a scheduler job rebuilds the watchlist digest
+every hour (`DIGEST_INTERVAL_MINUTES`, 15–240) between 09:15 and 15:30 IST on
+trading days. Each run produces `TradeVMx_Watchlist_Digest_<date>_<time>.pdf`:
+logo and version in the header, a KPI strip, the desk view, a table with the
+prediction for every name (bias, entry band, stop, T1/T2, R:R), a mini chart per
+instrument, and a final page listing every data source used. Email goes out with
+the PDF attached when Gmail is configured; Telegram gets a compact text summary.
+`ENABLE_DIGEST=false` switches the schedule off without touching the rest of the
+alerts. Two buttons in Configuration: **Watchlist digest PDF** (download only) and
+**Email digest now** (build and send immediately).
+
+**Run at Windows startup.** **Run at Windows startup** in Configuration writes a
+shortcut into `shell:startup` that launches `run_tradevmx_silent.vbs` — `pythonw`,
+no console window, no browser. Press it again to remove it.
+
+**Updates.** `version.py` holds the running version and is shown in
+Configuration. **Check for updates** asks GitHub for the latest release of
+`UPDATE_REPO`; if it is newer, a banner appears with a download link. The check
+also runs automatically every 6 hours while the app is open, and once a day in
+the background. To update by hand: close the app, download the new
+`tradevmx-<version>.zip` from GitHub Releases, unzip over the folder keeping
+`.env`, then start again.
+
