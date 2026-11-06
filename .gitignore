@@ -22,3 +22,4 @@ venv/
 dist/
 build/
 *.spec
+paper_book.json

@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.0 — Studio release
+
+* **Fixed the dead UI.** `web/static/app.js` had a duplicated `let` declaration and
+  template literals mangled by a patch script; the script died on the syntax error,
+  so no click handler was ever attached. Rewritten as one syntax-checked file.
+* **Four-pane studio:** chart with crosshair and adjustable timeline, expected range /
+  best hour window, desk stats, and a simulated demat book.
+* **Any stock:** `/api/search` matches tickers and company names across ~130 NSE names.
+* **Real history:** `/api/history` returns OHLCV so the chart is no longer one bar.
+* **AI assistant chamber:** `/api/assistant`, Groq-backed with a deterministic digest.
+* **Branded daily brief PDF:** `/api/report/daily` with logo, KPI strip, movers,
+  signals and a licence/copyright footer on every page.
+* **Paper portfolio:** `/api/portfolio` with cash, positions, realised/unrealised P&L.
+* **Reports & export settings:** `EXPORT_DIR`, `OWNER_NAME`; licence gate
+  (`LICENSE_ACCEPTED`); desktop shortcut (`/api/shortcut`).
+* **Logo repaired:** `logo.png` was an SVG mislabelled `.png`; now a real PNG plus `.ico`.
+* **Native window hardening:** a backend failure explains what to install instead of
+  handing the session to a browser.
+
 Versions follow `MAJOR.MINOR.PATCH` and every release is a git tag `vX.Y.Z`, a
 GitHub release with a downloadable zip, and (if `UPDATE_REPO` is set) a banner
 inside the app.

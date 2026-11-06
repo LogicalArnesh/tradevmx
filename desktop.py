@@ -162,8 +162,34 @@ def main(argv: list[str] | None = None) -> int:
     deadline_tick.wait(6.0)  # up to ~6s for the port to open
 
     if not args.no_browser:
-        window = _create_window(app, args.host, port)
-        webview.start(debug=False)
+        # A native pywebview window owns the UI.  TradeVMx never opens a web
+        # browser: if the window backend is missing we explain it and keep the
+        # desk serving rather than handing the session to a browser tab.
+        try:
+            _create_window(app, args.host, port)
+            webview.start(debug=False)
+        except Exception as exc:  # noqa: BLE001 - surface the real reason
+            LOGGER.exception("Native window failed to start: %s", exc)
+            print("\n  The native window could not start on this PC.")
+            print(f"  Reason: {exc}")
+            if os.name == "nt":
+                print(
+                    "  Install the Microsoft Edge WebView2 runtime "
+                    "(https://developer.microsoft.com/microsoft-edge/webview2/),"
+                    " then start the app again."
+                )
+            else:
+                print(
+                    "  Install the GTK 3 runtime (python3-gi / gir1.2-webkit2-4.1)"
+                    " then start the app again."
+                )
+            print(f"  The desk is still running at {url} until you close this window.\n")
+            try:
+                threading.Event().wait()
+            except KeyboardInterrupt:
+                pass
+        finally:
+            desk.shutdown()
     else:
         # Headless console mode: the Flask server runs alone.
         try:

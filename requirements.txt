@@ -31,3 +31,6 @@ pytest>=8.0
 
 # Desktop window (native app window wrapping the local Flask UI)
 webview>=4.0
+
+# Image handling for the branded PDF header
+pillow>=10.0

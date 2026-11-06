@@ -7,6 +7,6 @@ GitHub release tag, so the tag must look like ``v1.2.0``.
 
 from __future__ import annotations
 
-__version__ = "1.0.8"
+__version__ = "1.1.0"
 
 __all__ = ["__version__"]

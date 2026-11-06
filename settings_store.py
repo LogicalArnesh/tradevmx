@@ -87,6 +87,11 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
         "Sweep cadence and the thresholds that decide what gets alerted.",
     ),
     (
+        "reports",
+        "Reports & export",
+        "Where PDFs are written and whose name appears on the licence block.",
+    ),
+    (
         "desktop",
         "Desktop experience",
         "Local toasts and optional voice announcements. Both are optional extras.",
@@ -248,7 +253,24 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         placeholder="yourname/tradevmx",
         help="GitHub owner/repo used for in-app update checks. Leave empty to disable them.",
     ),
+    FieldSpec(
+        key="EXPORT_DIR",
+        label="PDF export folder",
+        group="reports",
+        kind="text",
+        placeholder="reports",
+        help="Absolute path, or a folder relative to the app. Empty means reports/ next to the app.",
+    ),
+    FieldSpec(
+        key="OWNER_NAME",
+        label="Report owner",
+        group="reports",
+        kind="text",
+        placeholder="Your name or desk name",
+        help="Printed on every PDF beside the licence id and copyright line.",
+    ),
     FieldSpec(key="SETUP_DONE", label="Setup completed", group="desktop", kind="bool", hidden=True),
+    FieldSpec(key="LICENSE_ACCEPTED", label="Licence accepted", group="desktop", kind="bool", hidden=True),
 )
 
 SPEC_BY_KEY: dict[str, FieldSpec] = {spec.key: spec for spec in FIELD_SPECS}
@@ -266,6 +288,9 @@ DEFAULTS: dict[str, str] = {
     "VOICE_ALERTS": "false",
     "AUTO_ARM": "true",
     "SETUP_DONE": "false",
+    "LICENSE_ACCEPTED": "false",
+    "EXPORT_DIR": "",
+    "OWNER_NAME": "",
     "UPDATE_REPO": "LogicalArnesh/tradevmx",
 }
 

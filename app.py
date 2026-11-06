@@ -38,6 +38,7 @@ import sys
 import secrets
 import threading
 import settings_store
+import studio
 import updater
 from updater import check_cached
 from version import __version__ as APP_VERSION
@@ -682,6 +683,183 @@ def create_app(
             "scanned_at": state.scanned_at,
             "error": state.error,
         })
+
+    # ------------------------------------------------------------- studio
+    def _desk_context() -> dict[str, Any]:
+        state = build_state(desk)
+        market = state.get("market") or {}
+        clock_info = state.get("clock") or {}
+        return {
+            "time": clock_info.get("time_label"),
+            "phase": clock_info.get("phase"),
+            "scanned": market.get("scanned") or 0,
+            "actionable": market.get("actionable") or 0,
+            "rows": market.get("rows") or [],
+            "news": [],
+        }
+
+    def _env_value(key: str, default: str = "") -> str:
+        try:
+            raw = settings_store.read_env(desk.env_path).get(key) or ""
+        except Exception:  # noqa: BLE001 - settings must never break a route
+            return default
+        return raw.strip() or default
+
+    paper_book = studio.PaperPortfolio(desk.env_path.parent / "paper_book.json")
+
+    @app.get("/api/search")
+    def api_search() -> Any:
+        query = request.args.get("q", "")
+        try:
+            limit = int(request.args.get("limit", 12))
+        except ValueError:
+            limit = 12
+        return jsonify(
+            {
+                "query": query,
+                "matches": studio.search_instruments(
+                    query, limit=limit, watchlist=desk.settings.watchlist
+                ),
+            }
+        )
+
+    @app.get("/api/history")
+    def api_history() -> Any:
+        symbol = request.args.get("symbol", "").strip().upper()
+        timeframe = request.args.get("timeframe", "15m")
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if timeframe not in SUPPORTED_INTERVALS:
+            timeframe = "15m"
+        try:
+            limit = int(request.args.get("limit", 220))
+        except ValueError:
+            limit = 220
+        payload = studio.history_bars(symbol, timeframe, limit)
+        try:
+            payload["name"] = desk.settings.resolve_instrument(symbol).name
+        except Exception:  # noqa: BLE001 - unknown tickers still chart
+            payload["name"] = symbol
+        return jsonify(payload)
+
+    @app.post("/api/assistant")
+    @require_token
+    def api_assistant() -> Any:
+        payload = request.get_json(silent=True) or {}
+        question = str(payload.get("question", "")).strip()
+        result = studio.assistant_answer(
+            question,
+            _desk_context(),
+            api_key=desk.settings.groq_api_key,
+            model=desk.settings.groq_model,
+            timeout=desk.settings.groq_timeout,
+        )
+        result["question"] = question
+        return jsonify(result)
+
+    @app.get("/api/portfolio")
+    def api_portfolio() -> Any:
+        book = paper_book.snapshot()
+        symbols = [position["symbol"] for position in book.get("positions", [])]
+        if symbols:
+            book = paper_book.snapshot(studio.last_prices(symbols))
+        return jsonify(book)
+
+    @app.post("/api/portfolio")
+    @require_token
+    def api_portfolio_trade() -> Any:
+        payload = request.get_json(silent=True) or {}
+        symbol = str(payload.get("symbol", "")).strip().upper()
+        action = str(payload.get("action", "")).strip().upper()
+        name = str(payload.get("name", "") or symbol)
+        try:
+            qty = float(payload.get("qty", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "quantity must be a number"}), 400
+        price = payload.get("price")
+        try:
+            if price in (None, "", 0):
+                live = studio.last_prices([symbol])
+                price = live.get(symbol.upper())
+                if not price:
+                    return jsonify(
+                        {"error": "no live price for that symbol; type a price to fill"}
+                    ), 400
+            book = paper_book.trade(action, symbol, qty, float(price), name)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        desk._on_event(
+            SentinelEvent(
+                datetime.now(IST),
+                "info",
+                f"Paper {action.lower()} {qty:g} {symbol}",
+                f"Filled at {float(price):,.2f}",
+                kind="trade",
+            )
+        )
+        return jsonify({"ok": True, "book": book})
+
+    def _render_daily_brief() -> Any:
+        report = desk.sentinel.latest_report()
+        commentary = ""
+        if report is not None and report.snapshots:
+            try:
+                commentary = asyncio.run(desk.brain.desk_note(report.snapshots))
+            except Exception:  # noqa: BLE001 - a brief without commentary is still valid
+                LOGGER.exception("daily brief commentary failed")
+        out_dir = studio.resolve_export_dir(desk.env_path, desk.settings.report_dir)
+        try:
+            artifact = studio.build_daily_brief(
+                _desk_context(),
+                out_dir=out_dir,
+                commentary=commentary,
+                owner=_env_value("OWNER_NAME"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("daily brief failed: %s", exc)
+            return jsonify({"error": f"brief failed: {exc}"}), 502
+        return send_file(
+            artifact["path"],
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=artifact["filename"],
+        )
+
+    @app.get("/api/report/daily")
+    def api_daily_brief() -> Any:
+        return _render_daily_brief()
+
+    @app.post("/api/report/daily")
+    @require_token
+    def api_daily_brief_post() -> Any:
+        return _render_daily_brief()
+
+    @app.post("/api/shortcut")
+    @require_token
+    def api_shortcut() -> Any:
+        return jsonify(studio.ensure_shortcut())
+
+    @app.get("/api/license")
+    def api_license() -> Any:
+        payload = studio.licence_text()
+        payload["accepted"] = _env_value("LICENSE_ACCEPTED", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        return jsonify(payload)
+
+    @app.post("/api/license")
+    @require_token
+    def api_license_accept() -> Any:
+        payload = request.get_json(silent=True) or {}
+        accepted = bool(payload.get("accepted", True))
+        try:
+            settings_store.save({"LICENSE_ACCEPTED": accepted}, desk.env_path)
+        except settings_store.SettingsValidationError as exc:
+            return jsonify({"error": "validation failed", "fields": exc.errors}), 400
+        return jsonify({"ok": True, "accepted": accepted})
 
     @app.get("/api/logs")
     def api_logs() -> Any:

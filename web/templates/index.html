@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
 </head>
 <body>
-  <!-- native-window header (shown only when the app runs in a webview window) -->
+  <!-- native-window header (only visible inside the desktop window) -->
   <header id="win-head" class="win-head hidden">
     <div class="win-title">
       <img class="win-logo" src="{{ url_for('static', filename='logo.png') }}" alt="TradeVMx" />
@@ -24,7 +24,31 @@
       <button id="win-close" class="win-btn win-btn-close" type="button" aria-label="Close"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M2 2 L8 8 M8 2 L2 8" stroke="#e7eef7" stroke-width="1.6" stroke-linecap="round"/></svg></button>
     </div>
   </header>
+
   <div class="grid-glow" aria-hidden="true"></div>
+
+  <!-- licence gate -->
+  <div id="license-gate" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="license-title">
+    <div class="modal-card license-card">
+      <div class="license-brand">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="TradeVMx" class="license-logo" />
+        <div>
+          <h2 id="license-title">TradeVMx <span class="muted small">v{{ version }}</span></h2>
+          <p class="muted small">NSE Market Desk · desktop edition</p>
+        </div>
+      </div>
+      <div class="license-body">
+        <p><b>Software licence.</b> This copy of TradeVMx is licensed to the operator of this
+        computer for personal market research. It is not investment advice and it places no
+        orders: every fill in the paper book is simulated.</p>
+        <p class="muted small" id="license-meta">Licence {{ version }}</p>
+      </div>
+      <div class="modal-foot">
+        <button id="license-accept" class="btn primary" type="button">I accept · open the desk</button>
+      </div>
+    </div>
+  </div>
+
   <div class="shell">
     <aside class="rail">
       <div class="brand">
@@ -36,8 +60,11 @@
       </div>
 
       <nav class="nav" aria-label="Sections">
-        <button class="nav-item is-active" type="button" data-view="dashboard">
-          <span class="nav-dot" aria-hidden="true"></span>Dashboard
+        <button class="nav-item is-active" type="button" data-view="studio">
+          <span class="nav-dot" aria-hidden="true"></span>Studio
+        </button>
+        <button class="nav-item" type="button" data-view="assistant">
+          <span class="nav-dot" aria-hidden="true"></span>AI assistant
         </button>
         <button class="nav-item" type="button" data-view="settings">
           <span class="nav-dot" aria-hidden="true"></span>Configuration
@@ -61,18 +88,22 @@
     <main class="main">
       <header class="topbar">
         <div>
-          <h1 id="view-title">Market pulse</h1>
-          <p id="view-sub" class="muted">Waiting for the first sweep.</p>
+          <h1 id="view-title">Studio</h1>
+          <p id="view-sub" class="muted">Search any NSE stock to open its desk.</p>
         </div>
-        <div id="readiness" class="chips" aria-label="Channel status"></div>
+        <div class="topbar-right">
+          <div id="readiness" class="chips" aria-label="Channel status"></div>
+          <button id="toggle-sentinel" class="btn small" type="button">Arm desk</button>
+        </div>
       </header>
 
       <div id="update-banner" class="banner hidden" role="status"></div>
 
-      <section id="view-dashboard" class="view">
+      <!-- ============================================================ studio -->
+      <section id="view-studio" class="view">
         <div class="panel controls">
           <div class="search-box">
-            <input id="symbol-search" type="text" placeholder="Search symbol (e.g. RELIANCE, ^NSEI, NIFTY)" autocomplete="off" />
+            <input id="symbol-search" type="text" placeholder="Search any stock — RELIANCE, INFY, NIFTY" autocomplete="off" spellcheck="false" />
             <span id="symbol-hint" class="muted small"></span>
           </div>
           <div class="search-group">
@@ -85,66 +116,101 @@
               <option value="1h">1h</option>
             </select>
           </div>
+          <div class="search-group grow">
+            <label for="timeline-range">Timeline · <span id="timeline-label" class="mono">120 bars</span></label>
+            <input id="timeline-range" type="range" min="30" max="220" step="10" value="120" />
+          </div>
           <div class="search-group">
             <button id="scan-now" class="btn" type="button">Scan now</button>
-            <span id="sentinel-status" class="status"><i></i> idle</span>
-            <span id="next-run" class="muted small">No schedule</span>
-            <span class="spacer"></span>
             <button id="refresh-state" class="btn ghost small" type="button">Refresh</button>
           </div>
         </div>
 
-        <div id="stats" class="stats"></div>
-
-        <div class="split">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Live tape</h2>
-              <span id="scan-time" class="muted small"></span>
-            </div>
-            <div id="tape" class="tape">
-              <div class="empty">No sweep yet. Press <b>Scan now</b>.</div>
-            </div>
-          </div>
-
-          <div class="panel">
+        <div class="studio-grid">
+          <!-- 1 · chart -->
+          <div class="panel pane pane-chart">
             <div class="panel-head">
               <h2>Chart</h2>
               <span id="chart-error" class="muted small error"></span>
             </div>
             <div id="chart" class="chart">
-              <div class="empty">Waiting for a symbol. Select one above.</div>
+              <div class="empty">Select a symbol above to load the chart.</div>
             </div>
+            <div id="chart-readout" class="chart-readout mono">Move the cursor over the chart</div>
             <div id="chart-levels" class="chart-legend"></div>
-            <div class="chart-legend">
-              <span><i class="dot"></i> latest price</span>
-              <span><i class="dot dot-bull"></i> bias</span>
+          </div>
+
+          <!-- 2 · expected -->
+          <div class="panel pane">
+            <div class="panel-head"><h2>Expected &amp; best window</h2></div>
+            <div id="expected" class="stack">
+              <div class="empty">Load a chart to project the session.</div>
             </div>
+          </div>
+
+          <!-- 3 · stats -->
+          <div class="panel pane">
+            <div class="panel-head"><h2>Desk stats</h2></div>
+            <div id="stats" class="stack">
+              <div class="empty">Waiting for the first sweep.</div>
+            </div>
+          </div>
+
+          <!-- 4 · paper book -->
+          <div class="panel pane">
+            <div class="panel-head"><h2>Paper account</h2><span id="book-status" class="muted small"></span></div>
+            <div id="book" class="stack">
+              <div class="empty">₹10,00,000 simulated cash. Buy something.</div>
+            </div>
+            <form id="trade-form" class="trade-form" autocomplete="off">
+              <input id="trade-symbol" type="text" placeholder="SYMBOL" />
+              <input id="trade-qty" type="number" min="1" step="1" placeholder="Qty" />
+              <input id="trade-price" type="number" min="0" step="0.05" placeholder="Price" />
+              <button id="trade-buy" class="btn small" type="button">Buy</button>
+              <button id="trade-sell" class="btn ghost small" type="button">Sell</button>
+            </form>
           </div>
         </div>
 
-        <div class="split">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Bias &amp; prediction</h2>
-            </div>
-            <div id="forecast" class="forecast">
-              <div class="empty">Awaiting a scan.</div>
-            </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Live tape</h2>
+            <span id="scan-time" class="muted small"></span>
           </div>
-
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Signal feed</h2>
-              <span id="feed-count" class="muted small">0</span>
-            </div>
-            <ul id="events" class="events">
-              <li class="empty">Quiet.</li>
-            </ul>
+          <div id="tape" class="tape">
+            <div class="empty">No sweep yet. Press <b>Scan now</b>.</div>
           </div>
         </div>
       </section>
 
+      <!-- ========================================================= assistant -->
+      <section id="view-assistant" class="view hidden">
+        <div class="panel wide assistant">
+          <div class="panel-head">
+            <h2>AI assistant</h2>
+            <span class="muted small">Grounded on this desk's live sweep</span>
+          </div>
+          <div id="assistant-log" class="chat">
+            <div class="bubble bot">
+              Ask me for the session so far, a read on any symbol, or a full daily brief.
+              I answer from the live sweep, and export a branded PDF when you ask for it.
+            </div>
+          </div>
+          <div class="chat-actions">
+            <button class="btn ghost small" type="button" data-ask="Give me a brief report of today's session.">Today's session</button>
+            <button class="btn ghost small" type="button" data-ask="Which stocks look strongest right now and why?">Strongest names</button>
+            <button class="btn ghost small" type="button" data-ask="What is the risk into tomorrow's open?">Risk into tomorrow</button>
+            <button id="daily-brief" class="btn primary small" type="button">Daily brief PDF</button>
+            <button id="create-shortcut" class="btn ghost small" type="button">Create desktop shortcut</button>
+          </div>
+          <form id="assistant-form" class="chat-input" autocomplete="off">
+            <input id="assistant-input" type="text" placeholder="Ask the desk…" />
+            <button id="assistant-send" class="btn primary small" type="submit">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ======================================================== settings -->
       <section id="view-settings" class="view hidden">
         <div class="panel wide">
           <div class="panel-head">
@@ -154,7 +220,8 @@
           </div>
           <p class="muted small intro">
             Saved to <code>.env</code> on this PC, atomically, and applied immediately without a
-            restart. Secrets are stored on disk but never sent back to the browser.
+            restart. Secrets are stored on disk but never sent back to the window. Set the PDF
+            export folder and report owner under <b>Reports &amp; export</b>.
           </p>
           <form id="settings-form" autocomplete="off"></form>
           <div class="form-actions">
@@ -164,13 +231,14 @@
         </div>
       </section>
 
+      <!-- ======================================================== activity -->
       <section id="view-activity" class="view hidden">
         <div class="panel wide">
           <div class="panel-head">
             <h2>Activity log</h2>
             <button id="refresh-log" class="btn ghost small" type="button">Refresh</button>
           </div>
-          <pre id="log-output" class="log">Loading...</pre>
+          <pre id="log-output" class="log">Loading…</pre>
         </div>
       </section>
     </main>
@@ -194,7 +262,7 @@
   </div>
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
-  <noscript><p class="noscript">TradeVMx needs JavaScript enabled in your browser.</p></noscript>
+  <noscript><p class="noscript">TradeVMx needs JavaScript enabled.</p></noscript>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

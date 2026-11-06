@@ -469,3 +469,103 @@ After a code change: `git pull && sudo systemctl restart tradevmx`.
 MIT — see [LICENSE](LICENSE). Use it, fork it, sell your own alerts with it. No
 warranty: this is research tooling, not investment advice, and the author is not
 responsible for what the market does to your capital.
+
+---
+
+## 14. TradeVMx Studio — v1.1.0
+
+v1.1.0 replaces the single-column status page with a four-pane studio, and fixes
+the "the window opens but nothing responds" failure for good. The cause was a
+JavaScript parse error in `web/static/app.js`: a duplicated `let` declaration and
+template literals mangled by an old patch script. The browser stopped at the
+syntax error, so no click handler was ever attached — the page loaded, the chart
+and Configuration buttons were dead. The client is now one syntax-checked file
+(`node --check web/static/app.js`), and the logo is a real PNG (it was an SVG
+mislabelled `.png`, which is why brand images and the PDF header were broken).
+
+### The four panes
+
+| Pane | What it does |
+| --- | --- |
+| **Chart** | Candlesticks + volume from real OHLCV history, dashed support/resistance, and a crosshair: move the cursor and the readout shows that bar's time, O/H/L/C and volume. The **Timeline** slider changes how many bars are shown (30–220). |
+| **Expected & best window** | Projected range (0.9 × ATR either side of the last close), classic floor pivot with R1/S1, average bar range, drift in the window, and the **best hour to transact** computed from where the average bar range is widest. |
+| **Desk stats** | Instruments scanned, actionable setups, how many trade above VWAP, breadth, sweep state and error count. |
+| **Paper account** | A simulated demat book starting at ₹10,00,000. Buy and sell at the live price (or type your own fill), see positions, average cost, LTP, unrealised P&L and return. Persisted to `paper_book.json`, so it survives restarts. |
+
+The **Live tape** below the panes lists every swept instrument with bias,
+structure, signals and verdict; click a row to load it, or press **PDF** for the
+single-name research note.
+
+### Any stock, not five
+
+The search box is backed by `/api/search`, a tolerant matcher over indices plus a
+~130-name NSE universe (by ticker or company name). Type `reliance`, `infy`,
+`nifty`, `hdfc`… and a dropdown of matches appears; click one or press Enter.
+Anything not in the built-in list can still be opened by typing its ticker
+directly (`TATAPOWER`, `^NSEI`, …), because the chart endpoint accepts any
+yfinance symbol.
+
+### AI assistant chamber
+
+**AI assistant** in the rail. Ask "give me a brief report of today's session",
+"which stocks look strongest right now", "what is the risk into tomorrow's open".
+Answers are grounded on this desk's live sweep. With `GROQ_API_KEY` set the reply
+comes from the model; without it you get a deterministic digest of the same data,
+so the chamber never dead-ends. The log shows which source answered.
+
+### Daily brief PDF
+
+The **Daily brief PDF** button (or `POST /api/report/daily`) renders a branded,
+professional document: logo, product line, date, a KPI strip (instruments,
+actionable, above-VWAP, breadth), an AI session summary, a largest-movers table,
+the signals on the tape, tomorrow's plan, and on every page a footer with the
+licence id, copyright line and page number.
+
+Choose where it lands and whose name appears on it in **Configuration → Reports &
+export** (`EXPORT_DIR`, `OWNER_NAME`). Empty export folder means `reports/` next
+to the app.
+
+### Licence screen, logo and desktop shortcut
+
+First launch shows a licence screen (product, licence id, copyright). Accept once
+and it is remembered in `.env` as `LICENSE_ACCEPTED=true`.
+
+**AI assistant → Create desktop shortcut** writes `TradeVMx.lnk` to your Desktop
+pointing at `run_tradevmx.bat` with the app icon, so after the first run you open
+the desk with one double-click.
+
+### Never a web browser
+
+TradeVMx has no browser-launch code at all (`webbrowser` appears nowhere in the
+tree). `run_tradevmx.bat` starts `desktop.py`, which runs the local Flask engine
+on a background thread and shows the UI in a **native pywebview window**
+(title bar, minimise/maximise/close, taskbar icon).
+
+If the native window cannot start, v1.1.0 no longer fails silently or opens a
+tab: it prints the real reason and tells you what to install —
+
+* **Windows** — the Microsoft Edge **WebView2** runtime (preinstalled on Windows
+  11 and current Windows 10; otherwise install the Evergreen runtime).
+* **Linux** — GTK 3 + WebKit2 (`python3-gi`, `gir1.2-webkit2-4.1`).
+
+The desk keeps serving on `http://127.0.0.1:<port>/` until you close that window,
+so nothing is lost.
+
+### Update to a new version
+
+The app checks your GitHub releases (`UPDATE_REPO`, default
+`LogicalArnesh/tradevmx`) once a day and shows a banner with a **Download**
+button when a newer tag exists. To update: download the new zip from
+[Releases](https://github.com/LogicalArnesh/tradevmx/releases), unzip over the
+folder (keep your `.env` and `paper_book.json`), and double-click
+`run_tradevmx.bat` again. `pip` installs anything new on that first run.
+
+Building the Windows `.exe` yourself:
+
+```bat
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt pyinstaller
+.venv\Scripts\pyinstaller TradeVMx.spec
+```
+
+The windowed build lands in `dist\TradeVMx\TradeVMx.exe` (no console window).
