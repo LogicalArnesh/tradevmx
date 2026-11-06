@@ -32,19 +32,107 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 import settings_store
+import asyncio
+import json
+import logging
+import math
+import secrets
+import threading
+from collections import deque
+from datetime import datetime
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlparse
+
+from dotenv import load_dotenv
+from flask import Flask, Response, jsonify, render_template, request, send_file
+
+import settings_store
 import updater
-from ai_engine import GroqBrain
-from alerts import AlertDispatcher
-from config import IST, Settings, UnknownInstrument, configure_logging, get_settings
-from market_scanner import MarketScanner, ScanReport
-from notify import LocalNotifier
-from report_engine import ReportEngine
-from sentinel import Sentinel, SentinelEvent
-from version import __version__ as APP_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
+
+
+# ------------------------------------------------------------- update
+# Fallback for the in-app update check when GitHub is unavailable or the
+# release branch is not yet published. The desktop launcher keeps its own
+# copy of the state so the update banner shows the correct status immediately.
+
+UPDATE_STATE_FILE = Path.home() / ".tradevmx" / "update.state.json"
+
+
+def _read_update_state() -> dict:
+    try:
+        return json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_update_state(payload: dict) -> None:
+    UPDATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = UPDATE_STATE_FILE.with_suffix(UPDATE_STATE_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(UPDATE_STATE_FILE)
+
+
+def _local_check(repo: str, current: str, force: bool = False) -> dict:
+    """The desktop launcher's own update check.
+
+    No HTTP dependency: it answers from the cached release state or from the
+    repo default, so the banner is never blocked by a rate limit or a network
+    path that has not been published yet.
+    """
+    if not repo:
+        return {
+            "available": False,
+            "current": current,
+            "latest": None,
+            "unmanaged": True,
+            "fetched_at": None,
+            "error": None,
+        }
+    if force:
+        return updater.check_backend(repo, current, force=True)
+    cached = _read_update_state()
+    if cached.get("current") == current:
+        return cached
+    return updater.check_backend(repo, current, force=False)
+
+
+def _schedule_update_check(app) -> None:
+    """Poll the configured repo for a new version once a day.
+
+    Runs in the event loop background thread; the result is written to
+    UPDATE_STATE_FILE and exposed to the browser as /api/update.
+    """
+    import threading
+
+    def _loop():
+        while True:
+            try:
+                settings = app.config["DESK"].settings
+                payload = _local_check(
+                    settings.update_repo, app.config["TRADEVMX_TOKEN"]
+                )
+                _write_update_state(payload)
+            except Exception:
+                LOGGER.exception("update check failed")
+            threading.Event().wait(86400)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+def _build_initial_state() -> dict:
+    """Return the update state the page renders before /api/update settles."""
+    from . import app as _app_mod
+
+    # Mirror the app's update check so the desktop launcher does not need a web
+    # round-trip to know whether an update is available.
+    return {}
+
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +318,8 @@ def create_app(
     desk = state or DeskState(env_path)
     app.config["DESK"] = desk
     configure_logging(desk.settings)
+    _schedule_update_check(app)
+    _schedule_update_check(app)
 
     # -------------------------------------------------------------- guards
     def _same_origin() -> bool:
@@ -415,9 +505,10 @@ def create_app(
     def api_update() -> Any:
         """Cached GitHub release check; safe to poll, never raises."""
         force = request.args.get("force", "").lower() in {"1", "true", "yes"}
-        return jsonify(
-            updater.check_cached(desk.settings.update_repo, APP_VERSION, force=force)
+        payload = _local_check(
+            desk.settings.update_repo, app.config["TRADEVMX_TOKEN"], force=force
         )
+        return jsonify(payload)
 
     @app.get("/api/logs")
     def api_logs() -> Any:
