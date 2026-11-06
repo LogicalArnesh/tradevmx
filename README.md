@@ -595,3 +595,25 @@ the background. To update by hand: close the app, download the new
 `tradevmx-<version>.zip` from GitHub Releases, unzip over the folder keeping
 `.env`, then start again.
 
+## 16. Full market report — v1.3.0
+
+Ask the assistant for today's summary, or press **Full report (PDF)**, and the desk
+builds a document of typically 12-16 pages:
+
+1. **Cover** — logo, version, date, owner, KPI strip, contents, licence/disclaimer.
+2. **Executive summary** — breadth, leadership, laggards, largest move, what matters.
+3. **Market internals** — every tracked instrument: CMP, change, bias, structure,
+   VWAP and distance to it, ATR, volume versus median.
+4. **Predictions** — verdict, entry band, invalidation, target 1, target 2, R:R.
+5. **Charted deep dives** — one page per instrument (up to ten): candlesticks with a
+   volume panel, the indicator table behind the verdict, live signals, the plan.
+6. **Indicator methodology** — how VWAP, ATR, structure, volume ratio, severity and
+   risk-reward are computed.
+7. **Sources, freshness and disclaimer** — NSE, yfinance, the desk engine, the AI
+   narrative source, sweep timestamp and the licence block.
+
+Every page carries the logo footer, licence id, owner and copyright.
+
+**Layout note:** the sidebar logo is a fixed 36px tile and the chart panel a fixed
+420px box, so no image or SVG can stretch over the window on any screen size.
+

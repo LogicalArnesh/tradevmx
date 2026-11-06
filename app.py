@@ -755,6 +755,16 @@ def create_app(
             timeout=desk.settings.groq_timeout,
         )
         result["question"] = question
+        lowered = question.lower()
+        if any(
+            word in lowered
+            for word in ("report", "summary", "brief", "pdf", "digest", "today's session", "todays session")
+        ):
+            result["report"] = {
+                "url": "/api/report/session",
+                "label": "Download the full market report (PDF)",
+                "note": "Charts, indicator panels, predictions and sources.",
+            }
         return jsonify(result)
 
     @app.get("/api/portfolio")
@@ -863,6 +873,41 @@ def create_app(
             except Exception:  # noqa: BLE001 - charts are optional
                 bars[row["symbol"]] = []
         return rows, plans, bars
+
+    @app.get("/api/report/session")
+    def api_session_report() -> Any:
+        """Long-form market report: charts, indicators, plans and sources."""
+        rows, plans, bars = _digest_inputs()
+        if not rows:
+            return jsonify({"error": "no sweep yet - press Scan now, then build the report"}), 409
+        state = build_state(desk)
+        clock_info = state.get("clock") or {}
+        market = state.get("market") or {}
+        out_dir = studio.resolve_export_dir(desk.env_path, desk.settings.report_dir)
+        try:
+            artifact = studio.build_session_report(
+                {
+                    "time": clock_info.get("time_label"),
+                    "phase": clock_info.get("phase"),
+                    "timeframe": desk.settings.scan_timeframe,
+                    "scanned": market.get("scanned") or len(rows),
+                    "actionable": market.get("actionable") or 0,
+                    "rows": rows,
+                },
+                out_dir=out_dir,
+                bars_by_symbol=bars,
+                plans=plans,
+                owner=studio.env_owner(desk.env_path),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("session report failed: %s", exc)
+            return jsonify({"error": f"report failed: {exc}"}), 502
+        return send_file(
+            artifact["path"],
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=artifact["filename"],
+        )
 
     @app.get("/api/watchlist/digest")
     def api_watchlist_digest() -> Any:

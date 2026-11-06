@@ -633,8 +633,56 @@
     try {
       const data = await api("/api/assistant", { method: "POST", body: { question: text } });
       pushBubble(data.answer + (data.source === "local" ? "\n\n(local digest — add a Groq key for model answers)" : ""), "bot");
+      if (data.report) addReportLink(data.report);
     } catch (error) {
       pushBubble("I could not answer: " + error.message, "bot");
+    } finally {
+      restore();
+    }
+  }
+
+  function addReportLink(report) {
+    const log = $("#assistant-log");
+    if (!log || !report || !report.url) return;
+    const wrap = document.createElement("div");
+    wrap.className = "bubble bot";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn primary small";
+    button.textContent = report.label || "Download the full report (PDF)";
+    button.addEventListener("click", async () => {
+      const restore = setBusy(button, "Building…");
+      try {
+        await downloadPdf(report.url, "TradeVMx_Market_Report.pdf", () =>
+          pushBubble("Full report exported — cover, charts, indicator panels, plans and sources.", "bot"));
+      } catch (error) {
+        toast(error.message, "error");
+        pushBubble("The report could not be built: " + error.message, "bot");
+      } finally {
+        restore();
+      }
+    });
+    wrap.appendChild(button);
+    if (report.note) {
+      const note = document.createElement("div");
+      note.className = "muted small";
+      note.textContent = report.note;
+      wrap.appendChild(note);
+    }
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function fullReport() {
+    const button = $("#report-session");
+    const restore = setBusy(button, "Building report…");
+    try {
+      await downloadPdf("/api/report/session", "TradeVMx_Market_Report.pdf", () =>
+        pushBubble("Full report exported — one page per instrument with its chart, " +
+          "indicator panel, plan and the data sources.", "bot"));
+    } catch (error) {
+      toast(error.message, "error");
+      pushBubble("The report could not be built: " + error.message, "bot");
     } finally {
       restore();
     }
@@ -1040,6 +1088,7 @@
     $("#setup-skip")?.addEventListener("click", closeSetup);
     $("#start-setup")?.addEventListener("click", () => openSetup(true));
     $("#license-accept")?.addEventListener("click", acceptLicence);
+    $("#report-session")?.addEventListener("click", fullReport);
     $("#daily-brief")?.addEventListener("click", dailyBrief);
     $("#digest-pdf")?.addEventListener("click", digestPdf);
     $("#digest-email")?.addEventListener("click", digestEmail);

@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.0 — layout fix and full market report
+
+* **Fixed the overlapping logo and chart.** `.brand-logo` had no CSS rule, so the
+  512px PNG rendered at full size and covered the window; it is now a fixed 36px
+  tile. The chart SVG had no height constraint either — the panel is now a fixed
+  420px (320px on narrow windows) with the SVG filling it. Panes also get
+  `min-width: 0` so grid children can no longer overflow the window.
+* **New long-form market report** (`/api/report/session`, `studio.build_session_report`):
+  a cover page, executive summary, market-internals table, a predictions table with
+  entry band/stop/T1/T2/R:R, one charted page per instrument (real candlesticks drawn
+  server-side, indicator panel, live signals, plan), an indicator-methodology
+  section, and a sources/freshness/disclaimer page. A typical sweep yields 12–16
+  pages, and every page keeps the logo footer, licence id and copyright.
+* **Assistant hands you the report.** Asking for today's summary, a report, a brief
+  or a PDF returns the answer plus a one-click button for the full charted document.
+  The local (no-key) answer now names the plans on the tape, the VWAP breadth and
+  the risk-reward of each setup.
+
 ## v1.2.0 — always-on digest, auto-start, updates
 
 * **Always-on watchlist digest.** A scheduler job (`watchlist_digest`) runs every

@@ -656,9 +656,28 @@ def _local_answer(question: str, context: dict[str, Any]) -> str:
         body += (
             f"Largest move: {best.get('name')} at {best.get('change_pct')}%. "
         )
+    calls = [r for r in rows if str(r.get("verdict") or "").upper() in {"BUY", "SELL"}]
+    if calls:
+        body += "Plans on the tape: " + "; ".join(
+            f"{r.get('name')} {r.get('verdict')}"
+            + (
+                f" (R:R 1:{float(r['risk_reward']):.2f})"
+                if isinstance(r.get("risk_reward"), (int, float))
+                else ""
+            )
+            for r in calls[:5]
+        ) + ". "
+    if rows and (bullish or bearish):
+        body += (
+            "Read: "
+            + ("demand is holding above VWAP " if len(above) > len(rows) / 2 else "supply is pressing price below VWAP ")
+            + "and the strongest structure is "
+            + ", ".join(r.get("name", "") for r in (bullish or bearish)[:2])
+            + ". "
+        )
     tail = (
-        "Open a symbol from the search box for its chart, expected range and best "
-        "entry window. Ask for a daily brief to export the full PDF."
+        "Ask for the full report to get the charted PDF: one page per instrument with "
+        "entry bands, invalidation, targets, indicators and sources."
     )
     return header + body + tail
 
@@ -1296,6 +1315,560 @@ def build_watchlist_brief(
     )
     doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
     return {"path": str(path), "filename": filename, "bytes": path.stat().st_size if path.exists() else 0}
+
+
+# ---------------------------------------------------------------------------
+# Long-form, charted session report
+# ---------------------------------------------------------------------------
+def _candle_drawing(bars: Sequence[dict[str, Any]], width: float = 480.0, height: float = 150.0) -> Any:
+    """A candlestick + volume drawing for reportlab (no matplotlib needed)."""
+    from reportlab.graphics.shapes import Drawing, Line, Rect, String
+    from reportlab.lib import colors
+
+    drawing = Drawing(width, height)
+    gh = colors.HexColor("#e3e9f1")
+    slate = colors.HexColor("#64748b")
+    up_colour = colors.HexColor("#12805c")
+    down_colour = colors.HexColor("#b3261e")
+    up_vol = colors.HexColor("#b7d8cd")
+    down_vol = colors.HexColor("#e8c3c0")
+
+    clean: list[tuple[float, float, float, float, float]] = []
+    for bar in bars or []:
+        try:
+            o = float(bar.get("open"))
+            h = float(bar.get("high"))
+            l = float(bar.get("low"))
+            c = float(bar.get("close"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not all(math.isfinite(v) for v in (o, h, l, c)):
+            continue
+        try:
+            volume = float(bar.get("volume") or 0)
+        except (TypeError, ValueError):
+            volume = 0.0
+        clean.append((o, h, l, c, volume))
+
+    if len(clean) < 3:
+        drawing.add(String(width / 2, height / 2 - 3, "not enough bars for a chart",
+                           textAnchor="middle", fontSize=7.5, fillColor=slate))
+        return drawing
+
+    clean = clean[-80:]
+    pad_left, pad_right, pad_top, vol_h = 4.0, 42.0, 6.0, 26.0
+    plot_w = width - pad_left - pad_right
+    plot_h = height - pad_top - vol_h - 14
+    high = max(item[1] for item in clean)
+    low = min(item[2] for item in clean)
+    span = (high - low) or 1.0
+    max_volume = max((item[4] for item in clean), default=1.0) or 1.0
+    slot = plot_w / len(clean)
+    body_w = max(1.1, slot * 0.58)
+    baseline = pad_top + plot_h
+
+    def y_of(price: float) -> float:
+        return pad_top + (price - low) / span * plot_h
+
+    for step in range(5):
+        price = low + span * step / 4
+        y = y_of(price)
+        drawing.add(Line(pad_left, y, pad_left + plot_w, y, strokeColor=gh, strokeWidth=0.4))
+        drawing.add(String(width - pad_right + 3, y - 2.4, f"{price:,.0f}", fontSize=5.8, fillColor=slate))
+    drawing.add(Line(pad_left, baseline + 8, pad_left + plot_w, baseline + 8, strokeColor=gh, strokeWidth=0.5))
+
+    for index, (open_, high_, low_, close, volume) in enumerate(clean):
+        x = pad_left + slot * index + slot / 2
+        rising = close >= open_
+        colour = up_colour if rising else down_colour
+        drawing.add(Line(x, y_of(low_), x, y_of(high_), strokeColor=colour, strokeWidth=0.6))
+        top = y_of(max(open_, close))
+        bottom = y_of(min(open_, close))
+        drawing.add(Rect(x - body_w / 2, bottom, body_w, max(0.6, top - bottom),
+                         fillColor=colour, strokeColor=None))
+        if volume > 0:
+            bar_h = (volume / max_volume) * (vol_h - 4)
+            drawing.add(Rect(x - body_w / 2, baseline + 8, body_w, max(0.4, bar_h),
+                             fillColor=up_vol if rising else down_vol, strokeColor=None))
+    return drawing
+
+
+def report_filename(when: datetime | None = None) -> str:
+    stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H%M")
+    return f"TradeVMx_Market_Report_{stamp}.pdf"
+
+
+def build_session_report(
+    context: dict[str, Any],
+    *,
+    out_dir: Path,
+    bars_by_symbol: dict[str, Sequence[dict[str, Any]]] | None = None,
+    plans: dict[str, dict[str, Any]] | None = None,
+    commentary: str = "",
+    owner: str = "",
+    licence: str = LICENCE_ID,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """A long-form, charted market report (typically 10-16 pages).
+
+    Sections: cover, executive summary, breadth internals, prediction table, one
+    charted page per instrument, indicator methodology, and data sources with the
+    licence/disclaimer block.  Every page carries the logo footer, licence id and
+    copyright line.
+    """
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            HRFlowable,
+            Image,
+            KeepTogether,
+            PageBreak,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("reportlab is required for PDF export") from exc
+
+    when = now or datetime.now()
+    rows = [r for r in (context.get("rows") or []) if isinstance(r, dict)]
+    plans = plans or {}
+    bars_by_symbol = bars_by_symbol or {}
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = report_filename(when)
+    path = out_dir / filename
+
+    ink = colors.HexColor("#0b1220")
+    teal = colors.HexColor("#0f766e")
+    slate = colors.HexColor("#64748b")
+    line = colors.HexColor("#d7dee8")
+    panel = colors.HexColor("#f5f8fb")
+    green = colors.HexColor("#12805c")
+    red = colors.HexColor("#b3261e")
+
+    styles = getSampleStyleSheet()
+    cover_title = ParagraphStyle("RTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+                                 fontSize=26, leading=30, textColor=ink, alignment=TA_LEFT, spaceAfter=4)
+    cover_sub = ParagraphStyle("RSub", parent=styles["Normal"], fontName="Helvetica", fontSize=11,
+                               leading=15, textColor=slate)
+    h1 = ParagraphStyle("RH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=14,
+                        leading=18, textColor=teal, spaceBefore=4, spaceAfter=6)
+    h2 = ParagraphStyle("RH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=11,
+                        leading=14.5, textColor=ink, spaceBefore=8, spaceAfter=4)
+    body = ParagraphStyle("RBody", parent=styles["Normal"], fontName="Helvetica", fontSize=9.4,
+                          leading=14, textColor=ink)
+    small = ParagraphStyle("RSmall", parent=styles["Normal"], fontName="Helvetica", fontSize=8.2,
+                           leading=11.6, textColor=slate)
+    cell = ParagraphStyle("RCell", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8,
+                          leading=10.2, textColor=ink)
+    cell_head = ParagraphStyle("RCellHead", parent=cell, fontName="Helvetica-Bold", textColor=colors.white)
+
+    def table_style(header_rows: int = 1) -> TableStyle:
+        return TableStyle([
+            ("BACKGROUND", (0, 0), (-1, header_rows - 1), teal),
+            ("ROWBACKGROUNDS", (0, header_rows), (-1, -1), [colors.white, panel]),
+            ("GRID", (0, 0), (-1, -1), 0.3, line),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ])
+
+    scanned = int(context.get("scanned") or len(rows) or 0)
+    actionable = int(context.get("actionable") or 0)
+    above = [r for r in rows if float(r.get("cmp") or 0) > float(r.get("vwap") or 0)]
+    bullish = [r for r in rows if str(r.get("bias", "")).upper() == "BULLISH"]
+    bearish = [r for r in rows if str(r.get("bias", "")).upper() == "BEARISH"]
+    ranked = sorted(rows, key=lambda r: abs(float(r.get("change_pct") or 0)), reverse=True)
+    deep_dive = [r for r in ranked if bars_by_symbol.get(str(r.get("symbol")))][:10]
+    when_label = when.strftime("%A, %d %B %Y · %H:%M IST")
+
+    story: list[Any] = []
+
+    # ---------------------------------------------------------------- cover
+    logo = None
+    if LOGO_PATH.exists():
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(LOGO_PATH) as probe:
+                probe.verify()
+            logo = LOGO_PATH
+        except Exception:  # noqa: BLE001
+            logo = None
+    story.append(Spacer(1, 16 * mm))
+    if logo is not None:
+        try:
+            story.append(Image(str(logo), width=30 * mm, height=30 * mm, kind="proportional"))
+            story.append(Spacer(1, 10))
+        except Exception:  # noqa: BLE001
+            pass
+    story.append(Paragraph(f"{PRODUCT} · {TAGLINE}", cover_sub))
+    story.append(Paragraph("Daily Market Report", cover_title))
+    story.append(Paragraph(when_label + (f" · prepared for {owner}" if owner else ""), cover_sub))
+    story.append(Spacer(1, 8))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=teal, spaceAfter=10))
+
+    kpis = Table(
+        [
+            ["Instruments", "Actionable", "Above VWAP", "Breadth"],
+            [
+                str(scanned),
+                str(actionable),
+                f"{len(above)}/{len(rows)}" if rows else "—",
+                f"{len(bullish)} up / {len(bearish)} down",
+            ],
+        ],
+        colWidths=[42 * mm, 42 * mm, 42 * mm, 44 * mm],
+    )
+    kpis.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4f3")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), slate),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7.6),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 1), (-1, 1), 12.5),
+        ("TEXTCOLOR", (0, 1), (-1, 1), ink),
+        ("GRID", (0, 0), (-1, -1), 0.4, line),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(kpis)
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Inside this report", h2))
+    contents = [
+        "1. Executive summary — the session in one page",
+        "2. Market internals — breadth, structure and volume for every tracked name",
+        "3. Predictions — entry band, invalidation and targets per instrument",
+        f"4. Charted deep dives — {len(deep_dive)} instruments, one page each",
+        "5. Indicator methodology — how every number is computed",
+        "6. Data sources, freshness and disclaimer",
+    ]
+    for item in contents:
+        story.append(Paragraph(item, body))
+    story.append(Spacer(1, 14))
+    story.append(Paragraph(
+        f"Licence {licence} · {COPYRIGHT}", small))
+    story.append(Paragraph(
+        "Research document, not investment advice. Prices are exchange-delayed or "
+        "vendor-delayed snapshots; every figure is labelled with its source.", small))
+    story.append(PageBreak())
+
+    # ------------------------------------------------------ executive summary
+    story.append(Paragraph("1. Executive summary", h1))
+    if commentary:
+        for para in [p.strip() for p in str(commentary).split("\n") if p.strip()][:10]:
+            story.append(Paragraph(para.replace("&", "&amp;"), body))
+            story.append(Spacer(1, 4))
+    else:
+        leader_names = ", ".join(r.get("name", "") for r in bullish[:4]) or "none"
+        laggard_names = ", ".join(r.get("name", "") for r in bearish[:4]) or "none"
+        setups = [r for r in rows if r.get("verdict") in {"BUY", "SELL"}]
+        story.append(Paragraph(
+            f"The desk swept {scanned} instruments and found {actionable} setups above the "
+            f"alert severity floor. {len(above)} of {len(rows)} names trade above session VWAP, "
+            f"which is the cleanest single measure of intraday demand. Breadth reads "
+            f"{len(bullish)} bullish against {len(bearish)} bearish.", body))
+        story.append(Spacer(1, 5))
+        story.append(Paragraph(
+            f"<b>Leadership:</b> {leader_names}. <b>Laggards:</b> {laggard_names}. "
+            f"Instruments carrying an explicit directional verdict: "
+            f"{', '.join(r.get('name', '') for r in setups[:6]) or 'none in this sweep'}.", body))
+        if ranked:
+            top = ranked[0]
+            story.append(Paragraph(
+                f"<b>Largest move:</b> {top.get('name')} ({top.get('symbol')}) printing "
+                f"{_fmt(top.get('change_pct'))}% at {_fmt(top.get('cmp'))}, "
+                f"structure {top.get('structure') or '—'}, "
+                f"VWAP {_fmt(top.get('vwap'))}.", body))
+    story.append(Paragraph("What matters today", h2))
+    observations = []
+    if rows:
+        observations.append(
+            f"{len(above)}/{len(rows)} instruments are holding above VWAP; sustained breadth "
+            "above 60% is the desk's filter for trend days rather than chop.")
+    if actionable:
+        observations.append(
+            f"{actionable} setups cleared the severity floor. Only these qualify for a written "
+            "plan with entry, invalidation and targets.")
+    if deep_dive:
+        observations.append(
+            f"Charted deep dives cover {len(deep_dive)} names, chosen by absolute move so the "
+            "report leads with where the risk actually moved.")
+    observations.append(
+        "Risk into the next session is defined by the invalidation level on each plan, not by "
+        "the direction of the index print.")
+    for note in observations:
+        story.append(Paragraph("• " + note, body))
+        story.append(Spacer(1, 3))
+    story.append(PageBreak())
+
+    # ------------------------------------------------------- market internals
+    story.append(Paragraph("2. Market internals", h1))
+    story.append(Paragraph(
+        "Every tracked instrument with the readings the desk uses: last price, change, "
+        "directional bias, swing structure, distance from VWAP, ATR and volume versus its "
+        "own median.", small))
+    story.append(Spacer(1, 6))
+    if rows:
+        internals = [[
+            Paragraph("Instrument", cell_head), Paragraph("CMP", cell_head),
+            Paragraph("Chg %", cell_head), Paragraph("Bias", cell_head),
+            Paragraph("Structure", cell_head), Paragraph("VWAP", cell_head),
+            Paragraph("vs VWAP", cell_head), Paragraph("ATR", cell_head),
+            Paragraph("Vol x", cell_head),
+        ]]
+        for row in rows:
+            vwap = float(row.get("vwap") or 0)
+            cmp_ = float(row.get("cmp") or 0)
+            gap = ((cmp_ - vwap) / vwap * 100) if vwap else 0.0
+            internals.append([
+                Paragraph(f"{row.get('name') or ''}<br/><font size=6.4 color='#64748b'>{row.get('symbol') or ''}</font>", cell),
+                Paragraph(_fmt(row.get("cmp")), cell),
+                Paragraph(_fmt(row.get("change_pct")), cell),
+                Paragraph(str(row.get("bias") or "—"), cell),
+                Paragraph(str(row.get("structure") or "—"), cell),
+                Paragraph(_fmt(row.get("vwap")), cell),
+                Paragraph(f"{gap:+.2f}%", cell),
+                Paragraph(_fmt(row.get("atr")), cell),
+                Paragraph(_fmt(row.get("volume_ratio"), 2), cell),
+            ])
+        internals_table = Table(
+            internals,
+            colWidths=[40 * mm, 19 * mm, 16 * mm, 20 * mm, 21 * mm, 19 * mm, 17 * mm, 15 * mm, 13 * mm],
+            repeatRows=1,
+        )
+        internals_table.setStyle(table_style())
+        story.append(internals_table)
+    else:
+        story.append(Paragraph("No sweep is stored yet — arm the desk and re-run.", body))
+    story.append(PageBreak())
+
+    # ----------------------------------------------------------- predictions
+    story.append(Paragraph("3. Predictions and trade plans", h1))
+    story.append(Paragraph(
+        "Plans are produced by the desk engine: ATR-based entry bands, invalidation at the "
+        "swing that would break the thesis, and two targets. Risk-reward is measured against "
+        "target 1. Where a plan carries an AI verdict, the model name is listed in section 6.", small))
+    story.append(Spacer(1, 6))
+    plan_rows = [r for r in rows if plans.get(str(r.get("symbol"))) or r.get("verdict")]
+    if plan_rows:
+        pred = [[
+            Paragraph("Instrument", cell_head), Paragraph("Verdict", cell_head),
+            Paragraph("Entry band", cell_head), Paragraph("Stop", cell_head),
+            Paragraph("Target 1", cell_head), Paragraph("Target 2", cell_head),
+            Paragraph("R:R", cell_head),
+        ]]
+        for row in plan_rows:
+            plan = plans.get(str(row.get("symbol"))) or {}
+            entry = "—"
+            if plan.get("entry_low") is not None and plan.get("entry_high") is not None:
+                entry = f"{_fmt(plan.get('entry_low'))} – {_fmt(plan.get('entry_high'))}"
+            rr = plan.get("risk_reward")
+            pred.append([
+                Paragraph(f"{row.get('name') or ''}<br/><font size=6.4 color='#64748b'>{row.get('symbol') or ''}</font>", cell),
+                Paragraph(str(plan.get("verdict") or row.get("verdict") or "—"), cell),
+                Paragraph(entry, cell),
+                Paragraph(_fmt(plan.get("stop_loss")), cell),
+                Paragraph(_fmt(plan.get("target_1")), cell),
+                Paragraph(_fmt(plan.get("target_2")), cell),
+                Paragraph(f"1:{float(rr):.2f}" if isinstance(rr, (int, float)) else "—", cell),
+            ])
+        pred_table = Table(
+            pred,
+            colWidths=[46 * mm, 20 * mm, 34 * mm, 22 * mm, 22 * mm, 22 * mm, 16 * mm],
+            repeatRows=1,
+        )
+        pred_table.setStyle(table_style())
+        story.append(pred_table)
+    else:
+        story.append(Paragraph(
+            "No plan cleared the severity floor in this sweep. The internals table above still "
+            "shows structure and VWAP position for every name.", body))
+    story.append(PageBreak())
+
+    # ------------------------------------------------------------- deep dives
+    story.append(Paragraph("4. Charted deep dives", h1))
+    story.append(Paragraph(
+        "One page per instrument: the intraday candles the desk actually read, the indicator "
+        "panel behind the verdict, the live signals, and the plan with its invalidation.", small))
+    story.append(PageBreak())
+    if not deep_dive:
+        story.append(Paragraph(
+            "No OHLCV history was available for these instruments when the report was built. "
+            "Open the symbol in the Studio to pull history, then rebuild the report.", body))
+        story.append(PageBreak())
+    for row in deep_dive:
+        symbol = str(row.get("symbol"))
+        plan = plans.get(symbol) or {}
+        bars = bars_by_symbol.get(symbol) or []
+        story.append(Paragraph(
+            f"{row.get('name') or symbol} <font size=9 color='#64748b'>({symbol})</font>", h1))
+        story.append(Paragraph(
+            f"{_fmt(row.get('cmp'))} · {_fmt(row.get('change_pct'))}% · bias "
+            f"{row.get('bias') or '—'} · structure {row.get('structure') or '—'} · "
+            f"source {row.get('ltp_source') or 'desk sweep'}", small))
+        story.append(Spacer(1, 6))
+        story.append(_candle_drawing(bars, width=174 * mm, height=64 * mm))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            f"{len(bars)} bars · timeframe {context.get('timeframe') or '15m'} · "
+            "candles with the desk's volume panel below price.", small))
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Indicator panel", h2))
+        indicator_rows = [
+            ["Reading", "Value", "Reading", "Value"],
+            ["Last price", _fmt(row.get("cmp")), "Change", f"{_fmt(row.get('change_pct'))}%"],
+            ["Bias", str(row.get("bias") or "—"), "Structure", str(row.get("structure") or "—")],
+            ["Session VWAP", _fmt(row.get("vwap")),
+             "Distance to VWAP", f"{((float(row.get('cmp') or 0) - float(row.get('vwap') or 0)) / float(row.get('vwap') or 1) * 100):+.2f}%"],
+            ["ATR (14)", _fmt(row.get("atr")), "Volume vs median", _fmt(row.get("volume_ratio"), 2) + "x"],
+            ["Verdict", str(plan.get("verdict") or row.get("verdict") or "—"),
+             "Risk-reward", f"1:{float(plan.get('risk_reward')):.2f}" if isinstance(plan.get("risk_reward"), (int, float)) else "—"],
+        ]
+        indicator_table = Table(indicator_rows, colWidths=[34 * mm, 36 * mm, 34 * mm, 36 * mm])
+        indicator_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4f3")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), slate),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.3, line),
+            ("TEXTCOLOR", (0, 1), (0, -1), slate),
+            ("TEXTCOLOR", (2, 1), (2, -1), slate),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("FONTNAME", (3, 1), (3, -1), "Helvetica-Bold"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(indicator_table)
+
+        signals = row.get("signals") or []
+        story.append(Paragraph("Live signals", h2))
+        if signals:
+            for sig in signals[:4]:
+                story.append(Paragraph(
+                    f"• <b>{sig.get('label')}</b> ({sig.get('timeframe')}, severity "
+                    f"{sig.get('severity')}/5) — {sig.get('detail') or ''}", body))
+                story.append(Spacer(1, 2))
+        else:
+            story.append(Paragraph("No qualifying VWAP, volume or structure event is live.", body))
+
+        story.append(Paragraph("Plan", h2))
+        if plan:
+            entry = "—"
+            if plan.get("entry_low") is not None and plan.get("entry_high") is not None:
+                entry = f"{_fmt(plan.get('entry_low'))} – {_fmt(plan.get('entry_high'))}"
+            story.append(Paragraph(
+                f"Verdict <b>{plan.get('verdict') or '—'}</b> · entry band <b>{entry}</b> · "
+                f"invalidation <b>{_fmt(plan.get('stop_loss'))}</b> · "
+                f"targets <b>{_fmt(plan.get('target_1'))}</b> / <b>{_fmt(plan.get('target_2'))}</b>. "
+                f"The plan is void on a close beyond the invalidation level, and position size is "
+                f"set from that distance, not from conviction.", body))
+        else:
+            story.append(Paragraph(
+                "No written plan in this sweep: the instrument did not clear the desk severity "
+                "floor, so it is monitored rather than traded.", body))
+        story.append(PageBreak())
+
+    # ------------------------------------------------------------ methodology
+    story.append(Paragraph("5. Indicator methodology", h1))
+    method = [
+        ("VWAP", "Session volume-weighted average price, anchored at the 09:15 IST open. "
+                  "Price above VWAP means buyers have paid up on volume; the desk treats the "
+                  "VWAP reclaim or rejection as the primary intraday signal."),
+        ("ATR (14)", "Average true range over 14 bars. It sets the width of the entry band and "
+                     "the stop distance, so a volatile name automatically gets a wider plan."),
+        ("Structure", "Swing labelling from fractal highs and lows: HH/HL is an uptrend, LH/LL a "
+                      "downtrend, and mixed labels mean a range. Structure is what invalidates a "
+                      "bias, not a single candle."),
+        ("Volume ratio", "Last bar volume divided by the median volume of the lookback window. "
+                          "Above 1.5x counts as participation; below 0.7x is drift the desk ignores."),
+        ("Severity (1-5)", "How many independent conditions agree at once: VWAP position, structure, "
+                            "volume and momentum. The alert floor defaults to 3, so a headline only "
+                            "fires when more than one measure agrees."),
+        ("Bias", "The directional read after combining VWAP position, structure and momentum. "
+                 "Bias is a filter, not an entry: the entry comes from the plan."),
+        ("Verdict", "BUY or SELL only when a plan exists with a defined invalidation; otherwise the "
+                    "instrument stays on watch."),
+        ("Risk-reward", "Distance to target 1 divided by distance to invalidation. The desk prefers "
+                         "1:2 or better and rejects plans that need a stop inside normal noise."),
+    ]
+    for name, description in method:
+        story.append(Paragraph(name, h2))
+        story.append(Paragraph(description, body))
+    story.append(PageBreak())
+
+    # ---------------------------------------------------------------- sources
+    story.append(Paragraph("6. Data sources, freshness and disclaimer", h1))
+    story.append(Paragraph("Sources used to build this report", h2))
+    sources = [
+        "<b>NSE India</b> (via nsepython) — live quotes, index levels and traded volume for "
+        "NSE-listed instruments.",
+        "<b>Yahoo Finance</b> (via yfinance) — OHLCV history for the charts and every derived "
+        "indicator; the fallback when the exchange endpoint is rate-limited.",
+        "<b>Desk engine</b> — VWAP, ATR, swing structure, volume ratio, severity scoring, entry "
+        "bands, invalidation and targets, computed locally from the bars above.",
+        "<b>AI narrative</b> — Groq-hosted model when a key is configured; otherwise the "
+        "deterministic rule engine writes the summary. No number in this report comes from the "
+        "model: it only explains the data supplied to it.",
+        "<b>Report engine</b> — reportlab, rendered locally on this machine. Nothing is uploaded.",
+    ]
+    for item in sources:
+        story.append(Paragraph("• " + item, body))
+        story.append(Spacer(1, 3))
+    story.append(Paragraph("Freshness", h2))
+    story.append(Paragraph(
+        f"Sweep timestamp: {context.get('time') or 'not recorded'} IST · market phase "
+        f"{context.get('phase') or 'unknown'} · instruments in this document {len(rows)}. "
+        "Vendor and exchange feeds can lag by seconds to minutes; a stale flag in the Studio "
+        "means the last print could not be refreshed and the reading should be treated as "
+        "indicative.", body))
+    story.append(Paragraph("Disclaimer", h2))
+    story.append(Paragraph(
+        "This document is research output from a personal desk. It is not investment advice, "
+        "not a recommendation to buy or sell, and it places no orders. Simulated fills in the "
+        "paper account are not real trades. Markets can gap through any stated invalidation "
+        "level. Verify every price against your broker before acting.", body))
+    story.append(Paragraph(f"Licence {licence} · {COPYRIGHT}", small))
+
+    def _decorate(canvas: Any, doc: Any) -> None:
+        canvas.saveState()
+        width, height = A4
+        canvas.setStrokeColor(line)
+        canvas.setLineWidth(0.6)
+        canvas.line(18 * mm, 16 * mm, width - 18 * mm, 16 * mm)
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(slate)
+        canvas.drawString(18 * mm, 11.4 * mm, f"{PRODUCT} v{_version()} · {COPYRIGHT}")
+        canvas.drawCentredString(width / 2, 11.4 * mm, f"Licence {licence}")
+        owner_bit = f"{owner} · " if owner else ""
+        canvas.drawRightString(width - 18 * mm, 11.4 * mm, f"{owner_bit}Page {doc.page}")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=20 * mm,
+        title=f"{PRODUCT} Daily Market Report {when:%Y-%m-%d}",
+        author=owner or PRODUCT,
+        subject="NSE market report",
+    )
+    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
+    return {"path": str(path), "filename": filename,
+            "bytes": path.stat().st_size if path.exists() else 0}
 
 
 def ensure_autostart(enabled: bool, target: Path | None = None) -> dict[str, Any]:
