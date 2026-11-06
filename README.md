@@ -15,9 +15,19 @@ on demand                  /live /report /scan /status /wrap
 
 > Research tooling. Not investment advice. Paper-trade it before risking capital.
 
-**Getting it:** download `tradevmx-X.Y.Z.zip` from the Releases page of this
-repository, unzip it, and double-click `run_tradevmx.bat` (Windows) or run
-`./run_tradevmx.sh` (macOS/Linux). Licensed under the [MIT License](LICENSE).
+**Getting it:**
+
+* **As a desktop app (recommended):** download `tradevmx-X.Y.Z.zip` from the
+  Releases page of this repository, unzip it, and double-click `run_tradevmx.bat`
+  (Windows) or run `./run_tradevmx.sh` (macOS/Linux). The desktop app opens a
+  single local window with the full dashboard, the live chart, the AI prediction,
+  the news/expectations feed, the reports, and in-app notifications. The app
+  starts like any other program — no terminal, no browser, no command line.
+
+* **As source:** clone the repository, create a virtual environment and install
+  the requirements (see Section 3).
+
+Licensed under the [MIT License](LICENSE).
 
 ---
 
@@ -108,7 +118,33 @@ Prefer a GUI? Section 7 gives you the same engine in one local window.
 Any syntactically valid NSE ticker works with `/live` and `/report`, even if it
 is not on the watchlist (`RELIANCE`, `TCS.NS`, `M&M`).
 
-## 5. Risk contract
+## 5. Search and chart usage (desktop app)
+
+The desktop app's dashboard is driven by the search box and the chart panel.
+
+1. **Open the app** (double-click `run_tradevmx.bat` or run `./run_tradevmx.sh`).
+2. **Configure** (first launch opens the setup guide): enter your Telegram bot token
+   and chat ids, optionally Gmail app password, and your Groq API key (the free
+   tier is enough for AI verdicts).
+3. **Search a stock**: type a ticker or company name in the **Symbol** search box
+   and press **Enter**. The box shows an autocomplete dropdown so you can pick the
+   exact trading symbol. The chart loads the live candlestick + volume panel for
+   that symbol.
+4. **Choose a timeframe**: use the dropdown (1m, 5m, 15m, 30m, 1h) to change the
+   chart granularity.
+5. **Read the prediction**: the Bias & prediction panel shows the live bias,
+   signal chips, and the Groq-written trade plan (entry zone, invalidation,
+   T1/T2, reward:risk). With no Groq key the desk still shows the deterministic
+   ATR plan so the desk is never silent.
+6. **Open a report**: each tape row has a **PDF** button for the full research note.
+7. **Arm the sentinel**: the desk runs automatically (`AUTO_ARM=true`) and sweeps
+   every 15 minutes during market hours, pushing alerts to Telegram/email and the
+   in-app feed.
+
+Any syntactically valid NSE ticker works (RELIANCE, TCS.NS, NIFTY, BANKNIFTY, etc.),
+even if it is not on the watchlist.
+
+## 6. Risk contract
 
 The desk does not publish a plan it would not trade:
 
@@ -122,7 +158,7 @@ The desk does not publish a plan it would not trade:
 Compliant plans only are alerted; `NO TRADE` verdicts are still rendered in the
 report so the reasoning is auditable.
 
-## 6. Operations
+## 7. Operations
 
 * **Session gate** — every job calls `Settings.is_market_open()`; cron ticks at
   09:00, 15:45, weekends and holidays are no-ops. Set `MARKET_HOLIDAYS`
@@ -138,10 +174,79 @@ report so the reasoning is auditable.
 * **Long-running** — run under systemd (`Restart=always`) or a process manager;
   one long-polling bot instance per token only.
 
-## 7. Desktop console (recommended on your PC)
+## 8. Desktop app (single local window)
 
-This is the Jarvis-style cockpit: one local window with every feature, and your
-API keys editable inside the app.
+TradeVMx opens as a real desktop app: one local window with every feature — the
+live candlestick + volume chart, the AI prediction, the news/expectations feed,
+the reports, and in-app notifications. It starts exactly like a normal program:
+you double-click it, the app opens, and configuration happens inside. There is no
+terminal, no browser, and no command line to run it.
+
+### Download and run (Windows)
+
+1. Download `tradevmx-X.Y.Z.zip` from the [Releases page](https://github.com/LogicalArnesh/tradevmx/releases).
+2. Unzip the folder.
+3. Double-click `run_tradevmx.bat`.
+
+A window opens to the desktop console. The app prints a banner with the console
+URL (`http://127.0.0.1:8765` on first launch) and arms the sentinel automatically.
+Closing the window stops the desk.
+
+### Download and run (macOS / Linux)
+
+1. Download `tradevmx-X.Y.Z.zip` from the [Releases page](https://github.com/LogicalArnesh/tradevmx/releases).
+2. Unzip the folder.
+3. Run `./run_tradevmx.sh` (or double-click it).
+
+### What the app contains
+
+| Item | What it does |
+|---|---|
+| **App name + version** | Shown at the top of the console (`TradeVMx · NSE Market Desk 1.0.5`) and in the settings summary. |
+| **Dashboard** | IST clock, market phase, Arm/Disarm sentinel, Scan now, live tape (CMP, change, bias, VWAP distance, signal chips), signal feed, one-click PDF per symbol. |
+| **Live chart** | Self-contained candlestick + volume panel. No TradingView key needed. Search a symbol by name or ticker in the **Symbol** box, pick a timeframe (1m/5m/15m/30m/1h) from the dropdown, and the chart renders the live OHLCV bars with support/resistance levels. |
+| **Bias & prediction** | Groq-written trade plan (entry zone, invalidation, T1/T2, reward:risk) with the deterministic ATR fallback when no key is configured. |
+| **Signal feed** | Real-time alerts from the sentinel sweep. |
+| **Reports** | One-click PDF per symbol — executive summary, price table, AI verdict, levels. |
+| **Setup / Configuration** | Paste your Telegram bot token and chat ids, Gmail app password, and Groq API key. **Send test** verifies each channel. Saving rewrites `.env` atomically and reloads the engine without a restart. |
+| **Activity log** | Tail of `logs/tradevmx.log`. |
+
+Everything is local: the server binds `127.0.0.1`, every launch generates a
+random token that all mutating requests must present, cross-origin POSTs are
+refused, and the page runs under a strict Content-Security-Policy. Secrets are
+never sent back to the browser - only a short mask.
+
+### Setup flow inside the app
+
+1. Launch the app. A **Setup guide** opens by itself asking for the Telegram bot
+   token, chat ids, then the optional Gmail app password and Groq key. (Use the
+   **Configuration** tab at any time to re-open it.)
+2. Enter the **Telegram** group: `TELEGRAM_BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
+   and your chat id from [@userinfobot](https://t.me/userinfobot).
+3. Enter the **Groq** group: `GROQ_API_KEY` from [console.groq.com/keys] (the free
+   tier is enough). Without a key the desk still runs on the deterministic ATR
+   engine — the search, chart and prediction will all work, just without an AI
+   verdict.
+4. Enter the **Email** group (optional): `GMAIL_USER` + a 16-character Gmail App
+   Password and `EMAIL_RECIPIENTS`.
+5. Click **Save & arm the desk**.
+
+### Everyday flow in the desktop app
+
+* The desk arms itself (`AUTO_ARM=true`) and sweeps every 15 minutes during
+  market hours, pushing alerts to Telegram/email and the in-app feed.
+* **Search a stock**: type a name or ticker (e.g. `reliance`, `RELIANCE`, `^NSEI`,
+  `NIFTY`) into the search box and press **Enter**. The app shows an autocomplete
+  dropdown so you can pick the exact symbol, then loads the live candlestick +
+  volume chart with current price, bias and signal levels.
+* Use the **timeframe** selector to change the chart granularity.
+* Press **Scan now** to force a fresh sweep at any time.
+* Each tape row has a **PDF** button for the full research note.
+
+## 9. Desktop console (the same window, scoped to one app)
+
+This is the original local console: one local window with every feature, and
+your API keys editable inside the app.
 
 ```bash
 python desktop.py                       # or double-click run_tradevmx.bat
@@ -183,7 +288,7 @@ sweeps every 15 minutes during market hours -> press **Scan now** if you want a
 sweep immediately -> open the feed or Telegram for alerts -> each tape row has a
 PDF button for the full research note.
 
-## 8. Versions & updates
+## 10. Versions & updates
 
 Every release is a git tag `vX.Y.Z`, a GitHub Release with a downloadable zip,
 and an entry in [CHANGELOG.md](CHANGELOG.md). The sidebar shows the running
@@ -214,7 +319,7 @@ echoed or stored — creates the private repository, pushes `main` and the tags,
 sets the repository description and topics, and points `UPDATE_REPO` at it. The
 pushed `vX.Y.Z` tag then builds the downloadable release.
 
-## 9. Run it 24/7
+## 11. Run it 24/7
 
 The desk only works while it is awake, and a sleeping laptop silently misses
 sweeps. Two ways to keep it alive.
@@ -268,7 +373,7 @@ Run exactly **one** bot process per token — Telegram permits a single
 long-polling consumer, so two instances will steal updates from each other.
 After a code change: `git pull && sudo systemctl restart tradevmx`.
 
-## 10. Troubleshooting
+## 12. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -287,7 +392,7 @@ After a code change: `git pull && sudo systemctl restart tradevmx`.
 | Autostart does nothing | Windows: `schtasks /Query /TN TradeVMx`. Linux: `systemctl --user status tradevmx`. Re-run the installer as the same user that owns the folder. |
 | It never arms by itself | `AUTO_ARM=false`, or a `.env` copied from an older version without the key. Open Configuration once and save. |
 
-## 11. Known limits
+## 13. Known limits
 
 * Yahoo intraday data is delayed (~15 min on many symbols); the nsepython
   overlay is used when available, but NSE endpoints rate-limit aggressively and

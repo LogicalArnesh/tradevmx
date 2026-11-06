@@ -67,6 +67,12 @@ class ChartEngine:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        # The chart engine never reads settings via attributes that were
+        # removed in the Settings refactor.  Everything it needs comes from
+        # get_settings() directly, so it works whether or not a scanner has
+        # been attached to the Settings object already.
+        self._settings = get_settings()
+        self._scanner = None
         self._pool: dict[tuple[str, str], ChartState] = {}
         self._lock = threading.Lock()
 
@@ -88,13 +94,24 @@ class ChartEngine:
             cls._registry.pop(key, None)
 
     # ------------------------------------------------------------------
+    def attach_scanner(self, scanner: object) -> None:
+        """Point the chart engine at the live MarketScanner.
+
+        The chart engine does not own the scanner: the desktop's DeskState
+        injects it, and the sentinel keeps its own.  This keeps one scanner
+        thread-pool and one cache for both the tape and the chart.
+        """
+        self._scanner = scanner
+
+    # ------------------------------------------------------------------
     def state(self, symbol: str, timeframe: str = "15m") -> ChartState:
         now = time.time()
         key = (symbol.upper(), timeframe)
 
         with self._lock:
             st = self._pool.get(key)
-            if st is None or (now - st.scanned_at) > self.settings.chart_ttl_seconds:
+            ttl = self._settings.snapshot_ttl_seconds or 60
+            if st is None or (now - st.scanned_at) > ttl:
                 st = self._rebuild(key, timeframe, now)
                 self._pool[key] = st
             return st
@@ -127,12 +144,22 @@ class ChartEngine:
 
     # ------------------------------------------------------------------
     def _latest_snapshot(self, symbol: str, timeframe: str, now: float):
-        # Live scanner is the single source of truth. In tests a hand-rolled
-        # snapshot is injected by the test harness.
-        scanner = self.settings.scanner
-        if not scanner:
-            raise RuntimeError("MarketScanner not available")
-        return scanner.snapshot(symbol=symbol, timeframe=timeframe)
+        # The production scanner is attached by the desktop (DeskState) or by
+        # the sentinel.  In tests a hand-rolled snapshot is injected by the
+        # test harness, so there may be no scanner at all.
+        scanner = self._scanner
+        if scanner is None:
+            # Fall back to a fresh MarketScanner when nothing is attached.
+            # The scanner uses get_settings() internally, so this needs no
+            # further wiring.
+            from market_scanner import MarketScanner
+
+            scanner = MarketScanner(self._settings)
+        return scanner.snapshot(
+            instrument=scanner.settings.resolve_instrument(symbol),
+            timeframe=timeframe,
+            force=True,
+        )
 
     # ------------------------------------------------------------------
     def _bars_from_snapshot(self, snapshot: MarketSnapshot, timeframe: str) -> list[ChartBar]:
