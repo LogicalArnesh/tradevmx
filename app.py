@@ -36,15 +36,17 @@ import math
 import secrets
 import threading
 import settings_store
+import updater
 from updater import check_cached
 from version import __version__ as APP_VERSION
 from config import IST, configure_logging, UnknownInstrument, get_settings
-from market_scanner import MarketScanner, ScanReport
+from market_scanner import MarketScanner, ScanReport, SUPPORTED_INTERVALS
 from notify import LocalNotifier
 from report_engine import ReportEngine
 from alerts import AlertDispatcher
 from ai_engine import GroqBrain
 from sentinel import Sentinel, SentinelEvent
+from chart_engine import ChartEngine
 
 
 LOGGER = logging.getLogger(__name__)
@@ -169,6 +171,7 @@ class DeskState:
         get_settings.cache_clear()
         self.settings = get_settings()
         self.scanner = MarketScanner(self.settings)
+        self.chart_engine = ChartEngine(self.settings)
         self.brain = GroqBrain(self.settings)
         self.reports = ReportEngine(self.settings)
         self.alerts = AlertDispatcher(self.settings)
@@ -327,6 +330,7 @@ def create_app(
     app.config["DESK"] = desk
     configure_logging(desk.settings)
     _schedule_update_check(app)
+    ChartEngine.register(desk.chart_engine)
     _schedule_update_check(app)
 
     # -------------------------------------------------------------- guards
@@ -517,6 +521,43 @@ def create_app(
             desk.settings.update_repo, app.config["TRADEVMX_TOKEN"], force=force
         )
         return jsonify(payload)
+
+    @app.get("/api/symbols")
+    def api_symbols():
+        """List the watched instruments the chart knows"""
+        symbols = sorted({ins.symbol for ins in desk.settings.watchlist})
+        # Indices always available for charting
+        symbols += [ins.symbol for ins in get_settings().instruments.values() if ins.kind == "index"]
+        return jsonify({
+            "symbols": symbols,
+            "current": desk.settings.watchlist[0].symbol if desk.settings.watchlist else None,
+        })
+
+    @app.get("/api/chart")
+    def api_chart():
+        """Current live chart for a symbol (bars + levels + snapshot)."""
+        symbol = request.args.get("symbol", "").strip().upper()
+        timeframe = request.args.get("timeframe", "15m")
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if timeframe not in SUPPORTED_INTERVALS:
+            return jsonify({"error": f"unsupported timeframe; use {', '.join(sorted(SUPPORTED_INTERVALS))}"}), 400
+        try:
+            state = desk.chart_engine.state(symbol, timeframe)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({
+            "symbol": state.symbol,
+            "name": state.name,
+            "timeframe": state.timeframe,
+            "current": state.snapshot.cmp if state.snapshot else None,
+            "change_pct": state.snapshot.change_pct if state.snapshot else None,
+            "is_stale": state.is_stale,
+            "bars": [b.as_dict() for b in state.bars],
+            "levels": state.levels,
+            "scanned_at": state.scanned_at,
+            "error": state.error,
+        })
 
     @app.get("/api/logs")
     def api_logs() -> Any:
