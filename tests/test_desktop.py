@@ -15,8 +15,10 @@ import pytest
 import settings_store
 from ai_engine import GroqBrain
 from app import DeskState, build_state, create_app
-from config import DEFAULT_UPDATE_REPO, IST, get_settings
+from config import DEFAULT_UPDATE_REPO, IST, get_settings, Settings
 from market_scanner import MarketSnapshot, ScanReport, Signal
+from report_engine import ReportEngine
+from sentinel import Sentinel
 
 
 # ---------------------------------------------------------------------------
