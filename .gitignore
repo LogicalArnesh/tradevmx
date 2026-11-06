@@ -17,3 +17,8 @@ venv/
 
 # ---- os ----
 .DS_Store
+
+# ---- built desktop app (never commit build artefacts) ----
+dist/
+build/
+*.spec
