@@ -27,3 +27,6 @@ paper_book.json
 
 # NSE symbol master cache (rebuilt automatically)
 data/
+
+# The app build spec is part of the release pipeline
+!TradeVMx.spec
