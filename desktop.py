@@ -1,8 +1,10 @@
 """TradeVMx desktop :: launcher.
 
 Double-click ``run_tradevmx.bat`` (Windows) or ``./run_tradevmx.sh`` (macOS /
-Linux), or run ``python desktop.py``. It starts the local console on a free
-loopback port and opens your browser. Closing the window stops the desk.
+Linux), or run ``python desktop.py``. It starts a native desktop window that
+wraps the local control-room console (the Flask app) and shows the live market
+desk in a real app window: a title bar, minimise / maximise / close buttons, a
+taskbar icon and a logo. Closing the window stops the desk.
 
 Nothing is exposed to the network: the default host is ``127.0.0.1`` and the
 sentinel only runs while this process is alive.
@@ -16,8 +18,9 @@ import os
 import socket
 import sys
 import threading
-import webbrowser
 from pathlib import Path
+
+import webview
 
 from app import APP_VERSION, DEFAULT_PORT, DeskState, create_app, settings_store
 from config import configure_logging, get_settings
@@ -50,16 +53,49 @@ def _free_port(host: str, preferred: int, attempts: int = 12) -> int:
     )
 
 
+def _create_window(app, host: str, port: int) -> webview.Window:
+    """Create the native desktop window wrapping the local Flask UI."""
+    url = f"http://{host}:{port}/"
+    LOGGER.info("Launching native window at %s", url)
+
+    window = webview.create_window(
+        title="TradeVMx — NSE Market Desk",
+        url=url,
+        width=1280,
+        height=820,
+        min_size=(920, 640),
+        resizable=True,
+        frameless=False,
+        background_color="#05080e",
+        js_api={
+            "dock": lambda: (window.dock() if hasattr(window, "dock") else None),
+            "minimize": lambda: (window.minimize() if hasattr(window, "minimize") else None),
+            "maximize": lambda: (window.maximize() if hasattr(window, "maximize") else None),
+            "close": lambda: (window.destroy() if hasattr(window, "destroy") else None),
+            "log": lambda *args: print("[TradeVMx]", *args, flush=True),
+        },
+    )
+    return window
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="TradeVMx desktop console")
-    parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address (default 127.0.0.1)",
+    )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.getenv("APP_PORT", str(DEFAULT_PORT))),
         help=f"preferred port (default {DEFAULT_PORT})",
     )
-    parser.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="do not open a browser",
+    )
     args = parser.parse_args(argv)
 
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
@@ -90,15 +126,50 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.exception("Auto-arm failed: %s", exc)
             print(f"  Could not arm the sentinel automatically: {exc}\n")
 
-    if not args.no_browser:
-        threading.Timer(1.2, webbrowser.open, args=(url,)).start()
+    # Start Flask in a background thread; the native window owns the GUI.
+    server_thread = threading.Thread(
+        target=app.run,
+        kwargs={
+            "host": args.host,
+            "port": port,
+            "threaded": True,
+            "use_reloader": False,
+            "debug": False,
+        },
+        daemon=True,
+    )
+    server_thread.start()
+    LOGGER.info("Flask console listening on %s", url)
 
-    try:
-        app.run(host=args.host, port=port, threaded=True, use_reloader=False, debug=False)
-    except KeyboardInterrupt:
-        print("\nStopping TradeVMx...")
-    finally:
-        desk.shutdown()
+    # Give Flask a moment to bind so the first request does not race.
+    deadline_tick = threading.Event()
+
+    def wait_for_port() -> None:
+        import socket as _socket
+
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as probe:
+            while True:
+                try:
+                    probe.connect((args.host, port))
+                    deadline_tick.set()
+                    return
+                except OSError:
+                    if deadline_tick.is_set():
+                        return
+                    threading.Event().wait(0.05)
+
+    threading.Thread(target=wait_for_port, daemon=True).start()
+    deadline_tick.wait(6.0)  # up to ~6s for the port to open
+
+    if not args.no_browser:
+        window = _create_window(app, args.host, port)
+        webview.start(debug=False)
+    else:
+        # Headless console mode: the Flask server runs alone.
+        try:
+            app.run(host=args.host, port=port, threaded=True, use_reloader=False, debug=False)
+        finally:
+            desk.shutdown()
     return 0
 
 

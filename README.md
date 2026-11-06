@@ -243,50 +243,110 @@ never sent back to the browser - only a short mask.
 * Press **Scan now** to force a fresh sweep at any time.
 * Each tape row has a **PDF** button for the full research note.
 
-## 9. Desktop console (the same window, scoped to one app)
+## 9. Desktop app (true native .exe)
 
-This is the original local console: one local window with every feature, and
-your API keys editable inside the app.
+TradeVMx is now delivered as a real desktop application, not a website in a
+browser. The double-click launcher opens a **native app window** with its own
+title bar, minimise / maximise / close buttons, a taskbar icon and the TradeVMx
+logo. The local Flask console and all features run inside that single app
+window.
 
-```bash
-python desktop.py                       # or double-click run_tradevmx.bat
-                                        # macOS/Linux: ./run_tradevmx.sh
-```
+### What you get
 
-The launcher starts the console on `http://127.0.0.1:8765` (it moves to the next
-free port if that one is taken), opens your browser, and shuts the desk down when
-you close the window.
-
-| Panel | What it does |
+| Item | What it does |
 |---|---|
+| **Native window** | Title bar, taskbar icon, minimise / maximise / close buttons, resizable, 920×640 minimum. Built with `pywebview` + `flask`. |
+| **App logo** | A vector + PNG logo (`web/static/logo.svg`, `logo.png`, `logo.ico`) in the window header and the app brand mark. |
 | **Dashboard** | IST clock and market phase, Arm/Disarm sentinel, Scan now, live tape (CMP, change, bias, VWAP distance, signal chips), signal feed, one-click PDF per symbol. |
-| **Configuration** | Every key and threshold as a form. Secrets are masked and never leave the machine; **Send test** verifies Telegram, Gmail and Groq independently; saving rewrites `.env` atomically and reloads the engine without a restart. |
-| **Activity** | Tail of `logs/tradevmx.log`. |
+| **Live chart** | Self-contained candlestick + volume panel. No TradingView key needed. Search a symbol by name or ticker in the **Symbol** box, pick a timeframe (1m/5m/15m/30m/1h) from the dropdown, and the chart renders the live OHLCV bars with support/resistance levels. |
+| **Bias & prediction** | Groq-written trade plan (entry zone, invalidation, T1/T2, reward:risk) with the deterministic ATR fallback when no key is configured. |
+| **Signal feed** | Real-time alerts from the sentinel sweep. |
+| **Reports** | One-click PDF per symbol — executive summary, price table, AI verdict, levels. |
+| **Setup / Configuration** | Paste your Telegram bot token and chat ids, Gmail app password, and Groq API key. **Send test** verifies each channel. Saving rewrites `.env` atomically and reloads the engine without a restart. |
+| **Activity log** | Tail of `logs/tradevmx.log`. |
 
-Everything is local: the server binds `127.0.0.1`, every launch generates a
-random token that all mutating requests must present, cross-origin POSTs are
-refused, and the page runs under a strict Content-Security-Policy. Secrets are
-never sent back to the browser - only a short mask.
+### How the desktop app is built
 
-Optional extras, not installed by default and safe to skip:
+The `.exe` is produced with **PyInstaller (onedir)**. The build bundles:
 
-```bash
-.venv/bin/pip install plyer pyttsx3     # Windows: .venv\Scripts\pip.exe install plyer pyttsx3
-```
+* the `desktop.py` launcher;
+* the entire Python environment (`_internal/`), including Flask, numpy, pandas,
+  nsepython, yfinance, groq, python-telegram-bot, apscheduler, reportlab, webview;
+* the dashboard UI (`_internal/web/templates/`, `_internal/web/static/`,
+  `_internal/web/static/logo.png`);
+* the `.env` template (`.env.example`).
 
-Then enable *Desktop toasts* / *Voice announcements* in Configuration. Without
-those packages the toggles simply stay silent; the in-app feed and Telegram
-alerts are unaffected.
+`console=False` in the PyInstaller spec means the app opens as a **window**,
+not a terminal. The Flask console runs silently in the background inside the
+window; the setup guide, chart, search and all controls are rendered in-page, so
+there is no browser to drive and no URL bar to hide.
 
-On first launch a **setup guide** opens by itself: it asks for the Telegram bot
-token and chat ids, then the optional Gmail app password and Groq key, and arms
-the desk when you save. It is the same form as Configuration, limited to the
-three channel groups. Skip it and the guide returns on the next launch.
+### Building the Windows `.exe` from source
 
-**Everyday flow:** start the app -> the desk arms itself (`AUTO_ARM=true`) and
-sweeps every 15 minutes during market hours -> press **Scan now** if you want a
-sweep immediately -> open the feed or Telegram for alerts -> each tape row has a
-PDF button for the full research note.
+1. **Clone and install** (as in Section 3), plus `webview`:
+
+   ```bash
+   python -m venv .venv
+   .venv/bin/pip install -r requirements.txt      # webview ships with the wheels
+   cp .env.example .env           # copy, then fill in your keys
+   ```
+
+2. **Build the app** (from a command prompt in the repo root):
+
+   ```bash
+   pip install pyinstaller
+   python TradeVMx.spec
+   ```
+
+   The output is `dist/TradeVMx\TradeVMx.exe` plus the packaged folders. The
+   `.exe` is a single double-clickable file — copy it anywhere, along with the
+   `dist/TradeVMx` folder, and it runs with no Python or dependencies installed.
+
+3. **(Optional) external build** — to produce a Windows `.exe` from a non-Windows
+   machine, build `TradeVMx.spec` on Windows, or cross-build with `wine` + the
+   Windows Python and PyInstaller. The desktop app code is platform-independent;
+   it only needs the webview backend that is compiled for the target OS.
+
+### Download and run (Windows)
+
+1. Download `tradevmx-X.Y.Z.zip` from the [Releases page](https://github.com/LogicalArnesh/tradevmx/releases).
+2. Unzip the folder.
+3. Run `run_tradevmx.bat` (double-click). The script creates `.venv` if missing,
+   installs dependencies, and starts the desktop app.
+
+### Download and run (macOS / Linux)
+
+1. Download `tradevmx-X.Y.Z.zip` from the [Releases page](https://github.com/LogicalArnesh/tradevmx/releases).
+2. Unzip the folder.
+3. Run `./run_tradevmx.sh` (or double-click it).
+
+### Everyday flow
+
+1. Launch the app — a window opens with the TradeVMx logo, the live clock, the
+   market phase, and the setup guide.
+2. **Configure** (first launch): paste your Telegram bot token + chat ids, Gmail
+   app password, and Groq API key in the **Configuration** tab; press **Save**.
+3. **Search**: type a ticker or company name in the **Symbol** search box and
+   press Enter. An autocomplete dropdown lets you pick the exact symbol, then the
+   live candlestick + volume chart loads for that symbol.
+4. **Timeframe**: pick 1m / 5m / 15m / 30m / 1h from the dropdown to change
+   chart granularity.
+5. **Read the prediction**: the Bias & prediction panel shows the live bias,
+   signal chips and the Groq-written trade plan (entry zone, invalidation,
+   T1/T2, reward:risk). Without a Groq key the desk still shows the deterministic
+   ATR plan so the desk is never silent.
+6. **Arm the sentinel**: the desk arms itself (`AUTO_ARM=true`) and sweeps every
+   15 minutes during market hours, pushing alerts to Telegram/email and the
+   in-app feed.
+7. **Report**: each tape row has a **PDF** button for the full research note.
+
+**Everyday flow:** start the app -> the desk arms itself and sweeps every 15
+minutes during market hours -> press **Scan now** to force a fresh sweep -> open
+the feed or Telegram for alerts -> each tape row has a PDF button.
+
+**Optional extras** (not installed by default): `pip install plyer pyttsx3`
+for desktop toasts / spoken voice alerts. Without them the toggles stay silent;
+the in-app feed and Telegram alerts still work.
 
 ## 10. Versions & updates
 

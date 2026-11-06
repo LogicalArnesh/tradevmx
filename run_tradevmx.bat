@@ -19,7 +19,7 @@ if not exist "%PY%" (
     "%PY%" -m pip install --quiet --upgrade pip
 )
 
-"%PY%" -c "import flask, reportlab, yfinance, telegram, apscheduler, groq" >nul 2>nul
+"%PY%" -c "import flask, webview, reportlab, yfinance, telegram, apscheduler, groq" >nul 2>nul
 if errorlevel 1 (
     echo [TradeVMx] Installing dependencies ^(first run only^)...
     "%PY%" -m pip install --quiet -r requirements.txt
