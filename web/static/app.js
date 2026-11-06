@@ -242,16 +242,126 @@
           : `Awaiting first sweep · ${data.clock.open ? "market open" : "market closed"}`;
       }
     }
-  }
+  }  /* ------------------------------------------------------------ chart */
+  /* --- autocomplete dropdown --- */
+  const originalSymbolList = [];
+  let symbolList = [];
+  let $autocomplete = null;
+  let $autocompleteIndex = -1;
 
-  /* ------------------------------------------------------------ chart */
-  async function loadSymbols() {
+  async function loadSymbolList() {
     try {
       const data = await api("/api/symbols");
-      return data.symbols || [];
+      const items = data.symbols || [];
+      originalSymbolList.length = 0;
+      originalSymbolList.push(...items);
+      symbolList = [...originalSymbolList];
+      return items;
     } catch (error) {
       toast(error.message, "error");
       return [];
+    }
+  }
+
+  function buildAutocomplete(input) {
+    // Remove an existing dropdown so only one is ever shown.
+    if ($autocomplete) {
+      $autocomplete.remove();
+      $autocomplete = null;
+      $autocompleteIndex = -1;
+    }
+    $autocomplete = document.createElement("div");
+    $autocomplete.className = "autocomplete-wrap";
+    $autocomplete.setAttribute("role", "listbox");
+    $autocomplete.id = "autocomplete-list";
+    input.parentNode.appendChild($autocomplete);
+
+    const onKeyDown = (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        $autocompleteIndex = Math.min($autocompleteIndex + 1, symbolList.length - 1);
+        renderAutocomplete();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        $autocompleteIndex = Math.max($autocompleteIndex - 1, 0);
+        renderAutocomplete();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if ($autocompleteIndex >= 0 && $autocompleteIndex < symbolList.length) {
+          const sel = symbolList[$autocompleteIndex];
+          input.value = sel.symbol;
+          hideAutocomplete();
+          loadChart(sel.symbol);
+        }
+      } else if (e.key === "Escape") {
+        hideAutocomplete();
+      } else {
+        $autocompleteIndex = -1;
+      }
+    };
+    input.addEventListener("keydown", onKeyDown);
+
+    const onBlur = (e) => {
+      // Wait a beat in case the blur was caused by a click on a suggestion.
+      setTimeout(() => {
+        if (!$autocomplete.contains(e.relatedTarget)) {
+          hideAutocomplete();
+        }
+      }, 150);
+    };
+    input.addEventListener("blur", onBlur);
+
+    const renderAutocomplete = () => {
+      if (!symbolList.length) {
+        $autocomplete.innerHTML = "<div class=\"autocomplete-item is-empty\">No symbols found</div>";
+        return;
+      }
+      const q = input.value.trim().toUpperCase();
+      const filtered = symbolList.filter((s) =>
+        s.symbol.toUpperCase().includes(q) || s.name.toUpperCase().includes(q)
+      );
+      if (!filtered.length) {
+        $autocomplete.innerHTML = "<div class=\"autocomplete-item is-empty\">No matching symbol</div>";
+        return;
+      }
+      $autocomplete.innerHTML = filtered
+        .map((s, i) => {
+          const idx = symbolList.indexOf(s);
+          return `<div class=\"autocomplete-item\" data-index=\`${idx}\\`>
+            <div class=\"ac-symbol\">${esc(s.symbol)}</div>
+            <div class=\"ac-name\">${esc(s.name)}</div>
+            <div class=\"ac-desc\">${esc(s.description)}</div>
+          </div>`;
+        })
+        .join("");
+      // Highlight the active item.
+      $$(".autocomplete-item", $autocomplete).forEach((el, i) => {
+        el.classList.toggle("is-active", i === $autocompleteIndex);
+      });
+    };
+
+    input.addEventListener("input", () => {
+      const val = input.value.trim().toUpperCase();
+      $autocompleteIndex = -1;
+      if (val) {
+        symbolList = symbolList.filter((s) =>
+          s.symbol.toUpperCase().includes(val) || s.name.toUpperCase().includes(val)
+        );
+      } else {
+        // Reset to the full list on a cleared search box.
+        symbolList = [...originalSymbolList];
+      }
+      if (symbolList.length) {
+        renderAutocomplete();
+      }
+    });
+  }
+
+  function hideAutocomplete() {
+    if ($autocomplete) {
+      $autocomplete.remove();
+      $autocomplete = null;
+      $autocompleteIndex = -1;
     }
   }
 
@@ -264,6 +374,9 @@
       chartState = data;
       renderChart(data);
       $("#symbol-hint").textContent = data.name + " · " + data.timeframe + " chart";
+      // sync the search box to the loaded symbol
+      const input = $("#symbol-search");
+      if (input) input.value = symbol;
     } catch (error) {
       $error.textContent = error.message;
       chartState = null;
@@ -274,12 +387,11 @@
     const host = $("#chart");
     if (!host) return;
     if (!data.bars || data.bars.length === 0) {
-      host.innerHTML = `<div class="empty">No bars yet. Press <b>Scan now</b>.</div>`;
+      host.innerHTML = `<div class=\"empty\">No bars yet. Press <b>Scan now</b>.</div>`;
       return;
     }
     host.innerHTML = "";
 
-    // price line
     const maxPrice = Math.max(...data.bars.map(b => b.close));
     const minPrice = Math.min(...data.bars.map(b => b.low));
     const range = maxPrice - minPrice || 1;
@@ -288,32 +400,24 @@
     data.bars.forEach((bar, i) => {
       const x = (i / (data.bars.length - 1 || 1)) * width;
       const y = height - ((bar.close - minPrice) / range) * (height - 8) - 4;
-      body += `<rect x="${x.toFixed(1)}" y="0" width="1" height="0" style="fill:${bar.close >= (data.bars[i-1]?.close ?? bar.close) ? '#16a34a' : '#dc2626'}" />`;
+      const prev = data.bars[i - 1]?.close ?? bar.close;
+      body += `<rect x=\"${x.toFixed(1)}\" y=\"0\" width=\"1\" height=\"0\" style=\"fill:${bar.close >= prev ? '#16a34a' : '#dc2626'}\" />`;
     });
-    host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block">
-      <line x1="0" y1="0" x2="0" y2="1" stroke="#e5e7eb"/>
+    host.innerHTML = `<svg viewBox=\"0 0 ${width} ${height}\" style=\"width:100%;height:100%;display:block\">
+      <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\" stroke=\"#e5e7eb\"/>
       ${body}
-      <text x="${width - 4}" y="${height - 4}" text-anchor="end" font-size="10" fill="#6b7280">${num(data.bars[data.bars.length-1]?.close ?? 0)}</text>
+      <text x=\"${width - 4}\" y=\"${height - 4}\" text-anchor=\"end\" font-size=\"10\" fill=\"#6b7280\">${num(data.bars[data.bars.length-1]?.close ?? 0)}</text>
     </svg>`;
     host.appendChild(document.createElement("div")).className = "muted small";
-  }
 
-  function watchSymbol(input, select) {
-    const onKey = (e) => {
-      if (e.key === "Enter" || e.blur) {
-        const val = input.value.trim().toUpperCase();
-        if (val) loadChart(val);
-      }
-    };
-    input.addEventListener("keydown", onKey);
-    input.addEventListener("blur", onKey);
-    function refresh() {
-      const list = $$("#chart-list option");
-      const match = list.find(o => o.value.toUpperCase() === input.value.trim().toUpperCase());
-      input.value = match ? match.value : input.value;
-      if (input.value.trim()) loadChart(input.value.trim().toUpperCase());
+    // levels snackbar
+    const lvl = $("#chart-levels");
+    if (lvl && (data.levels.supports?.length || data.levels.resistances?.length)) {
+      const parts = [];
+      data.levels.supports.forEach((s) => parts.push(`<span class=\"chip bg-support\">${num(s.price)} S</span>`));
+      data.levels.resistances.forEach((r) => parts.push(`<span class=\"chip bg-resistance\">${num(r.price)} R</span>`));
+      lvl.innerHTML = `<span>Levels</span>${parts.join("")}`;
     }
-    setInterval(refresh, 1500);
   }
 
   /* ------------------------------------------------------------ actions */
@@ -618,9 +722,24 @@
     $("#toggle-sentinel")?.addEventListener("click", toggleSentinel);
     $("#scan-now")?.addEventListener("click", scanNow);
     $("#refresh-state")?.addEventListener("click", refresh);
-    $("#symbol-search")?.addEventListener("input", () => {
-      const val = $("#symbol-search").value.trim().toUpperCase();
-      if (val) loadChart(val);
+    // symbol search: autocomplete dropdown + enter to drill into the chart
+    const $symbolSearch = $("#symbol-search");
+    if ($symbolSearch) {
+      $symbolSearch.addEventListener("input", () => buildAutocomplete($symbolSearch));
+      $symbolSearch.addEventListener("focus", () => {
+        // Preload the symbol list and show suggestions for the current value.
+        loadSymbolList().then(() => buildAutocomplete($symbolSearch));
+      });
+      $symbolSearch.addEventListener("blur", () => {
+        setTimeout(hideAutocomplete, 150);
+      });
+    }
+    $("#timeframe-select")?.addEventListener("change", () => {
+      if (chartState) {
+        const tf = $("#timeframe-select").value;
+        chartState.timeframe = tf;
+        loadChart(chartState.symbol);
+      }
     });
     $("#timeframe-select")?.addEventListener("change", () => {
       if (chartState) {

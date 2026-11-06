@@ -29,10 +29,12 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_file
+from jinja2 import FileSystemLoader
 
 import json
 import logging
 import math
+import sys
 import secrets
 import threading
 import settings_store
@@ -47,6 +49,46 @@ from alerts import AlertDispatcher
 from ai_engine import GroqBrain
 from sentinel import Sentinel, SentinelEvent
 from chart_engine import ChartEngine
+
+
+# ---------------------------------------------------------------------------
+# Bundle root
+#
+# When the app is run from a normal source checkout, ``__file__`` points at the
+# project folder.  When PyInstaller packages it as a one-file executable the
+# import path is ``sys._MEIPASS`` and the real files live under the
+# extraction directory (``sys._MEIPASS``), so ``__file__`` is no longer a usable
+# anchor.  Resolve the root once, at import time, and hand it to the app
+# factory so the template/static folders, the .env and the logs/Reports
+# directories all resolve correctly in both modes.
+# ---------------------------------------------------------------------------
+
+def _bundle_root() -> Path:
+    """Return the directory that holds the app's templates/ and web/ trees."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller one-file: content is extracted to this path
+        return Path(sys._MEIPASS)
+    # Normal source checkout
+    return Path(__file__).resolve().parent
+
+
+APP_ROOT = _bundle_root() / "web"
+TEMPLATE_ROOT = APP_ROOT / "templates"
+STATIC_ROOT = APP_ROOT / "static"
+
+# Env/settings live next to the project root (or in the extraction directory).
+ENV_PATH = APP_ROOT.parent / ".env"
+LOGS_DIR = APP_ROOT.parent / "logs"
+REPORTS_DIR = APP_ROOT.parent / "reports"
+
+def _create_app_root(app: Flask) -> dict:
+    """Return the resolved template/static roots so the frozen app resolves
+    its templates, CSS and JS relative to the app's real directory."""
+    return {
+        "template_folder": str(TEMPLATE_ROOT),
+        "static_folder": str(STATIC_ROOT),
+        "root_path": str(APP_ROOT.parent),
+    }
 
 
 LOGGER = logging.getLogger(__name__)
@@ -172,6 +214,7 @@ class DeskState:
         self.settings = get_settings()
         self.scanner = MarketScanner(self.settings)
         self.chart_engine = ChartEngine(self.settings)
+        self.chart_engine.attach_scanner(self.scanner)
         self.brain = GroqBrain(self.settings)
         self.reports = ReportEngine(self.settings)
         self.alerts = AlertDispatcher(self.settings)
@@ -317,13 +360,68 @@ def build_state(desk: DeskState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+def _resolve_web_roots() -> tuple[str, str]:
+    """Return (template_folder, static_folder) for the web UI.
+
+    From a source checkout the web/ folder sits next to this file.  When the
+    app runs from a PyInstaller onefile/onedir bundle the web/ tree is bundled
+    next to the executable, so we first look for it next to the executable and
+    then fall back to the source-tree layout.
+    """
+    import logging
+    LOGGER = logging.getLogger(__name__)
+    exe_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    # In onedir, the web/ tree lives in the same folder as the executable,
+    # alongside _internal/ with templates/ and static/ as sub-folders.
+    exe_parent = exe_dir.parent if exe_dir != Path(__file__).resolve().parent else exe_dir
+    # The project root is the parent of the source web/ folder.
+    project_root = APP_ROOT.parent if APP_ROOT.parent.exists() and (APP_ROOT.parent / "web" / "templates" / "index.html").exists() else APP_ROOT.parent
+    candidates = [exe_parent.parent, exe_parent, Path.cwd(), project_root]
+    for candidate in candidates:
+        # In onedir the web/ tree may sit at <candidate>/web/ (source layout).
+        web_tmpl = candidate / "web" / "templates" / "index.html"
+        web_static = candidate / "web" / "static"
+        if web_tmpl.exists() and web_static.exists():
+            LOGGER.info("Resolved web template root: %s", web_tmpl.parent)
+            # web/ contains templates/ and static/ as sub-folders.
+            return str(web_tmpl.parent), str(web_static)
+        # Inside PyInstaller extraction at <candidate>/_internal with
+        # templates/ and static/ as sub-folders.
+        _tmpl = candidate / "_internal" / "templates" / "index.html"
+        _static = candidate / "_internal" / "static"
+        if _tmpl.exists() and _static.exists():
+            LOGGER.info("Resolved web template root: %s", _tmpl.parent)
+            # _internal contains templates/ and static/ as sub-folders.
+            return str(_tmpl.parent), str(_static)
+    LOGGER.warning("Resolved web template root not found, falling back to source")
+    # Fall back to <project>/web (contains templates/ + static/ subfolders)
+    return str(TEMPLATE_ROOT), str(STATIC_ROOT)
+
+
 def create_app(
     env_path: Path | None = None,
     *,
     state: DeskState | None = None,
     token: str | None = None,
 ) -> Flask:
-    app = Flask(__name__, static_folder="web/static", template_folder="web/templates")
+    # Resolve the template/static roots (works for source checkout AND frozen
+    # onefile/onedir bundles).  Flask resolves static_folder/template_folder
+    # relative to the CWD for a frozen app, so we pass explicit absolute paths
+    # and a dedicated FileSystemLoader so templates resolve correctly
+    # regardless of the process working directory.
+    template_root, static_root = _resolve_web_roots()
+    # static_url_path='/static' so the browser always fetches /static/app.css
+    # and /static/app.js.  The static folder is the bundled web/static tree
+    # (source checkout or PyInstaller _internal/static), never the CWD.
+    app = Flask(
+        __name__,
+        static_folder=static_root,
+        static_url_path="/static",
+        root_path=str(APP_ROOT.parent),
+    )
+    # Register the template loader explicitly so the dashboard does not 500
+    # when the app is started from a packaged (frozen) bundle.
+    app.jinja_loader = FileSystemLoader(template_root)
     app.config["JSON_SORT_KEYS"] = False
     app.config["TRADEVMX_TOKEN"] = token or secrets.token_urlsafe(24)
     desk = state or DeskState(env_path)
@@ -356,9 +454,15 @@ def create_app(
     # -------------------------------------------------------------- pages
     @app.get("/")
     def index() -> str:
-        return render_template(
-            "index.html", token=app.config["TRADEVMX_TOKEN"], version=APP_VERSION
-        )
+        try:
+            return render_template(
+                "index.html", token=app.config["TRADEVMX_TOKEN"], version=APP_VERSION
+            )
+        except Exception as _e:
+            # Debug: re-raise with the loader path so we can see what went wrong
+            import traceback
+            traceback.print_exc()
+            return f"Template error: {repr(_e)}"
 
     @app.after_request
     def _headers(response: Response) -> Response:
@@ -524,12 +628,32 @@ def create_app(
 
     @app.get("/api/symbols")
     def api_symbols():
-        """List the watched instruments the chart knows"""
-        symbols = sorted({ins.symbol for ins in desk.settings.watchlist})
+        """List the watched instruments plus indices, with labels for the search dropdown."""
+        from config import get_settings
+
+        entries: list[dict[str, object]] = []
+        for inst in desk.settings.watchlist:
+            entries.append(
+                {
+                    "symbol": inst.symbol,
+                    "name": inst.name,
+                    "kind": inst.kind,
+                    "description": f"{inst.name} ({inst.symbol})",
+                }
+            )
         # Indices always available for charting
-        symbols += [ins.symbol for ins in get_settings().instruments.values() if ins.kind == "index"]
+        for inst in get_settings().instruments.values():
+            if inst.kind == "index":
+                entries.append(
+                    {
+                        "symbol": inst.symbol,
+                        "name": inst.name,
+                        "kind": inst.kind,
+                        "description": f"{inst.name} ({inst.symbol})",
+                    }
+                )
         return jsonify({
-            "symbols": symbols,
+            "symbols": entries,
             "current": desk.settings.watchlist[0].symbol if desk.settings.watchlist else None,
         })
 
