@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.1 — install fix
+
+* `requirements.txt` pinned the deprecated `webview` package, which needs GTK
+  headers and fails to build on a clean machine (and on CI). It now pins
+  `pywebview>=5.0`, the package that actually provides the `webview` module, so a
+  fresh `run_tradevmx.bat` install succeeds on Windows and Linux.
+* Added `pillow` explicitly, used for the PDF header logo.
+
 ## v1.1.0 — Studio release
 
 * **Fixed the dead UI.** `web/static/app.js` had a duplicated `let` declaration and

@@ -30,7 +30,9 @@ python-dotenv>=1.0
 pytest>=8.0
 
 # Desktop window (native app window wrapping the local Flask UI)
-webview>=4.0
+# pywebview provides the `webview` module and installs as pure Python.
+# The older `webview` package needs GTK headers and fails to build.
+pywebview>=5.0
 
 # Image handling for the branded PDF header
 pillow>=10.0
