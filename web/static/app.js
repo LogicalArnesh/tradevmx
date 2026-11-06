@@ -36,6 +36,8 @@
 
   let state = null;
   let settings = null;
+  let chartState = null;
+  let settings = null;
   let clockSkew = 0;
   let currentView = "dashboard";
   let busy = false;
@@ -240,6 +242,78 @@
           : `Awaiting first sweep · ${data.clock.open ? "market open" : "market closed"}`;
       }
     }
+  }
+
+  /* ------------------------------------------------------------ chart */
+  async function loadSymbols() {
+    try {
+      const data = await api("/api/symbols");
+      return data.symbols || [];
+    } catch (error) {
+      toast(error.message, "error");
+      return [];
+    }
+  }
+
+  async function loadChart(symbol) {
+    if (!symbol) return;
+    const $error = $("#chart-error");
+    try {
+      $error.textContent = "Loading…";
+      const data = await api("/api/chart?symbol=" + encodeURIComponent(symbol));
+      chartState = data;
+      renderChart(data);
+      $("#symbol-hint").textContent = data.name + " · " + data.timeframe + " chart";
+    } catch (error) {
+      $error.textContent = error.message;
+      chartState = null;
+    }
+  }
+
+  function renderChart(data) {
+    const host = $("#chart");
+    if (!host) return;
+    if (!data.bars || data.bars.length === 0) {
+      host.innerHTML = `<div class="empty">No bars yet. Press <b>Scan now</b>.</div>`;
+      return;
+    }
+    host.innerHTML = "";
+
+    // price line
+    const maxPrice = Math.max(...data.bars.map(b => b.close));
+    const minPrice = Math.min(...data.bars.map(b => b.low));
+    const range = maxPrice - minPrice || 1;
+    const width = 240, height = 160;
+    let body = "";
+    data.bars.forEach((bar, i) => {
+      const x = (i / (data.bars.length - 1 || 1)) * width;
+      const y = height - ((bar.close - minPrice) / range) * (height - 8) - 4;
+      body += `<rect x="${x.toFixed(1)}" y="0" width="1" height="0" style="fill:${bar.close >= (data.bars[i-1]?.close ?? bar.close) ? '#16a34a' : '#dc2626'}" />`;
+    });
+    host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block">
+      <line x1="0" y1="0" x2="0" y2="1" stroke="#e5e7eb"/>
+      ${body}
+      <text x="${width - 4}" y="${height - 4}" text-anchor="end" font-size="10" fill="#6b7280">${num(data.bars[data.bars.length-1]?.close ?? 0)}</text>
+    </svg>`;
+    host.appendChild(document.createElement("div")).className = "muted small";
+  }
+
+  function watchSymbol(input, select) {
+    const onKey = (e) => {
+      if (e.key === "Enter" || e.blur) {
+        const val = input.value.trim().toUpperCase();
+        if (val) loadChart(val);
+      }
+    };
+    input.addEventListener("keydown", onKey);
+    input.addEventListener("blur", onKey);
+    function refresh() {
+      const list = $$("#chart-list option");
+      const match = list.find(o => o.value.toUpperCase() === input.value.trim().toUpperCase());
+      input.value = match ? match.value : input.value;
+      if (input.value.trim()) loadChart(input.value.trim().toUpperCase());
+    }
+    setInterval(refresh, 1500);
   }
 
   /* ------------------------------------------------------------ actions */
@@ -544,6 +618,17 @@
     $("#toggle-sentinel")?.addEventListener("click", toggleSentinel);
     $("#scan-now")?.addEventListener("click", scanNow);
     $("#refresh-state")?.addEventListener("click", refresh);
+    $("#symbol-search")?.addEventListener("input", () => {
+      const val = $("#symbol-search").value.trim().toUpperCase();
+      if (val) loadChart(val);
+    });
+    $("#timeframe-select")?.addEventListener("change", () => {
+      if (chartState) {
+        const tf = $("#timeframe-select").value;
+        chartState.timeframe = tf;
+        loadChart(chartState.symbol);
+      }
+    });
     $("#save-settings")?.addEventListener("click", saveSettings);
     $("#refresh-log")?.addEventListener("click", loadLog);
     $("#setup-save")?.addEventListener("click", saveSetup);

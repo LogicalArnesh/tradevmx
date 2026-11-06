@@ -464,6 +464,11 @@ class Settings:
         except UnknownInstrument as exc:
             raise UnknownInstrument(f"Unknown symbol: {query!r}") from exc
 
+    @property
+    def instruments(self) -> dict[str, "Instrument"]:
+        """All instruments, plus the always-available indices, keyed by symbol."""
+        return {**_INDEX_INSTRUMENTS, **{i.symbol: i for i in self.watchlist}}
+
     # ---------------------------------------------------------- validation
     def validate(self) -> list[str]:
         """Return blocking configuration problems (empty when runnable)."""
