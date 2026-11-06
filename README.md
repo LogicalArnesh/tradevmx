@@ -617,3 +617,36 @@ Every page carries the logo footer, licence id, owner and copyright.
 **Layout note:** the sidebar logo is a fixed 36px tile and the chart panel a fixed
 420px box, so no image or SVG can stretch over the window on any screen size.
 
+## 17. Assistant, search and the report — v1.4.0
+
+**Asking a question.** The chamber keeps context: your last eight turns travel with the
+question, so "and the invalidation?" refers to the stock you just discussed. Every answer
+carries a source line — `via llama-3.3-70b-versatile` when Groq answered, or
+`local desk engine` plus the reason when it did not. If you ask about a stock outside the
+sweep, the desk fetches its OHLCV and builds a snapshot for it on the spot.
+
+**Which stock?** Type two letters and the dropdown searches the shipped universe, the NSE
+equity master (cached for seven days) and Yahoo Finance. If nothing matches, the last row
+loads the typed symbol directly, so any ticker can still be opened.
+
+**Prediction window.** "Expected & best window" is now explicit: it names the instrument,
+the timeframe, the bar count and the data source, then gives a verdict for the next 30-60
+minutes with entry band, invalidation, both targets, VWAP and stop distance. When price
+and VWAP disagree it says NO TRADE instead of inventing a direction.
+
+**Report.** Ask for a summary or press *Full report (PDF)*. Section 2 is the hour-by-hour
+brief you asked for: traded volume per IST hour, the average range overlaid, the biggest
+mover inside each hour, and a peak-hour sentence. A 10-12 name sweep yields 15-18 pages.
+
+## 18. Updates and the standalone app
+
+*In-app check:* Configuration → **Check for updates**. The banner offers **Download
+update**, which saves the newest release file to `Downloads` and tells you the path —
+no browser opens. Close the app, extract the new zip over the old folder (your `.env` is
+kept), and start it again.
+
+*Standalone app:* every tagged release also publishes
+`TradeVMx-<version>-windows.zip`, built on a Windows runner with PyInstaller. Unzip it
+anywhere, double-click `TradeVMx.exe`; Python does not need to be installed. It writes
+`.env`, logs and reports next to the exe.
+

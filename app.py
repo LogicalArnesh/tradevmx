@@ -399,6 +399,28 @@ def _resolve_web_roots() -> tuple[str, str]:
     return str(TEMPLATE_ROOT), str(STATIC_ROOT)
 
 
+def _follow_ups(question: str) -> list[str]:
+    """Contextual next questions, so the chamber keeps the conversation moving."""
+    lowered = (question or "").lower()
+    if any(word in lowered for word in ("report", "summary", "brief", "pdf", "digest")):
+        return [
+            "Which hour carried the session and why?",
+            "Which names would you watch into tomorrow?",
+            "What would void this read?",
+        ]
+    if any(word in lowered for word in ("buy", "sell", "entry", "target", "stop")):
+        return [
+            "Show me the strongest setup with its invalidation.",
+            "How does that risk compare with the rest of the tape?",
+            "Give me the full report with the charts.",
+        ]
+    return [
+        "Give me today's summary in detail.",
+        "Which stock has the cleanest setup right now?",
+        "Where did volume peak this session?",
+    ]
+
+
 def create_app(
     env_path: Path | None = None,
     *,
@@ -714,14 +736,17 @@ def create_app(
             limit = int(request.args.get("limit", 12))
         except ValueError:
             limit = 12
-        return jsonify(
-            {
-                "query": query,
-                "matches": studio.search_instruments(
-                    query, limit=limit, watchlist=desk.settings.watchlist
-                ),
-            }
+        matches = studio.search_instruments(
+            query, limit=limit, watchlist=desk.settings.watchlist
         )
+        source = "desk"
+        if len(query.strip()) >= 2 and len(matches) < 5:
+            extra = studio.remote_search(query, limit=limit)
+            if extra:
+                known = {str(m.get("symbol") or "").upper() for m in matches}
+                matches = matches + [m for m in extra if str(m.get("symbol") or "").upper() not in known]
+                source = "desk+yahoo"
+        return jsonify({"query": query, "matches": matches[:limit], "source": source})
 
     @app.get("/api/history")
     def api_history() -> Any:
@@ -747,25 +772,61 @@ def create_app(
     def api_assistant() -> Any:
         payload = request.get_json(silent=True) or {}
         question = str(payload.get("question", "")).strip()
+        history_raw = payload.get("history") or []
+        history: list[dict[str, str]] = []
+        if isinstance(history_raw, list):
+            for turn in history_raw[-8:]:
+                if not isinstance(turn, dict):
+                    continue
+                role = str(turn.get("role") or "").strip().lower()
+                content = str(turn.get("content") or "").strip()
+                if role in {"user", "assistant"} and content:
+                    history.append({"role": role, "content": content[:2000]})
         result = studio.assistant_answer(
             question,
             _desk_context(),
             api_key=desk.settings.groq_api_key,
             model=desk.settings.groq_model,
             timeout=desk.settings.groq_timeout,
+            history=history,
         )
         result["question"] = question
         lowered = question.lower()
         if any(
             word in lowered
-            for word in ("report", "summary", "brief", "pdf", "digest", "today's session", "todays session")
+            for word in ("report", "summary", "brief", "pdf", "digest", "today", "session")
         ):
             result["report"] = {
                 "url": "/api/report/session",
                 "label": "Download the full market report (PDF)",
-                "note": "Charts, indicator panels, predictions and sources.",
+                "note": "Hour-by-hour peaks, charts, predictions, indicators and sources.",
             }
+        result["suggestions"] = _follow_ups(question)
         return jsonify(result)
+
+    @app.post("/api/ai/test")
+    @require_token
+    def api_ai_test() -> Any:
+        """Prove the Groq key works, and say exactly why it does not."""
+        key = (desk.settings.groq_api_key or "").strip()
+        if not key:
+            return jsonify({"ok": False, "detail": "GROQ_API_KEY is empty in Configuration."})
+        try:
+            from groq import Groq
+
+            client = Groq(api_key=key, timeout=15)
+            completion = client.chat.completions.create(
+                model=desk.settings.groq_model,
+                messages=[{"role": "user", "content": "Reply with the single word: ready"}],
+                temperature=0,
+                max_tokens=8,
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            return jsonify({"ok": bool(text), "model": desk.settings.groq_model,
+                            "detail": text or "empty reply"})
+        except Exception as exc:  # noqa: BLE001 - the message is the point
+            return jsonify({"ok": False, "model": desk.settings.groq_model,
+                            "detail": f"{type(exc).__name__}: {str(exc)[:400]}"})
 
     @app.get("/api/portfolio")
     def api_portfolio() -> Any:
@@ -864,15 +925,101 @@ def create_app(
                 "target_2": plan.target_2,
                 "risk_reward": plan.risk_reward,
             }
-        bars: dict[str, list[dict[str, Any]]] = {}
-        for row in rows[:14]:
+        # A sweep row can be actionable before the sentinel has stored a plan for
+        # it. Derive the desk plan from the row so the report never shows a setup
+        # without its entry band, invalidation and targets.
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            if not symbol or (plans.get(symbol) or {}).get("verdict"):
+                continue
+            bias = str(row.get("bias") or "").upper()
+            verdict = "BUY" if bias == "BULLISH" else "SELL" if bias == "BEARISH" else ""
+            if not verdict:
+                continue
             try:
-                bars[row["symbol"]] = studio.history_bars(
-                    row["symbol"], desk.settings.scan_timeframe, 60
+                derived = studio.derive_plan({**row, "verdict": verdict})
+            except Exception:  # noqa: BLE001 - a bad row must not break the report
+                derived = {}
+            if derived:
+                plans[symbol] = derived
+
+        bars: dict[str, list[dict[str, Any]]] = {}
+        for row in rows[:10]:
+            symbol = str(row.get("symbol") or "")
+            if not symbol:
+                continue
+            try:
+                bars[symbol] = studio.history_bars(
+                    symbol, desk.settings.scan_timeframe, 90
                 ).get("bars", [])
             except Exception:  # noqa: BLE001 - charts are optional
-                bars[row["symbol"]] = []
+                bars[symbol] = []
         return rows, plans, bars
+
+    @app.post("/api/update/download")
+    @require_token
+    def api_update_download() -> Any:
+        """Fetch the newest release asset without opening a browser."""
+        import urllib.request
+
+        repo = (desk.settings.update_repo or "").strip()
+        if not repo:
+            return jsonify({"error": "no update repository configured"}), 400
+        payload = updater.check_cached(
+            repo, studio._version(), force=True, timeout=12.0
+        )
+        assets = [a for a in (payload.get("assets") or []) if isinstance(a, dict)]
+        if not assets:
+            detail = payload.get("error") or "that release has no downloadable files"
+            return jsonify({"error": str(detail)}), 409
+
+        def rank(asset: dict[str, Any]) -> int:
+            name = str(asset.get("name") or "").lower()
+            if name.endswith(".exe"):
+                return 0
+            if "windows" in name and name.endswith(".zip"):
+                return 1
+            if name.endswith(".zip"):
+                return 2
+            return 9
+
+        chosen = sorted(assets, key=rank)[0]
+        name = str(chosen.get("name") or "tradevmx-update.zip")
+        target_dir = Path.home() / "Downloads"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            target_dir = BASE_DIR / "updates"
+            target_dir.mkdir(parents=True, exist_ok=True)
+        destination = target_dir / name
+        request = urllib.request.Request(
+            str(chosen.get("url")),
+            headers={
+                "Accept": "application/octet-stream",
+                "User-Agent": "TradeVMx-updater",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as handle:
+                while True:
+                    chunk = response.read(1 << 16)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the app
+            LOGGER.warning("update download failed: %s", exc)
+            return jsonify({"error": f"download failed: {exc}"}), 502
+        if not destination.exists() or destination.stat().st_size == 0:
+            return jsonify({"error": "the download was empty"}), 502
+        return jsonify(
+            {
+                "ok": True,
+                "path": str(destination),
+                "filename": name,
+                "bytes": destination.stat().st_size,
+                "version": payload.get("latest") or "",
+            }
+        )
 
     @app.get("/api/report/session")
     def api_session_report() -> Any:
@@ -884,20 +1031,41 @@ def create_app(
         clock_info = state.get("clock") or {}
         market = state.get("market") or {}
         out_dir = studio.resolve_export_dir(desk.env_path, desk.settings.report_dir)
+        context = {
+            "time": clock_info.get("time_label"),
+            "phase": clock_info.get("phase"),
+            "timeframe": desk.settings.scan_timeframe,
+            "scanned": market.get("scanned") or len(rows),
+            "actionable": market.get("actionable") or 0,
+            "rows": rows,
+        }
+        commentary = ""
+        ai_source = ""
+        if desk.settings.groq_api_key:
+            try:
+                narrative = studio.assistant_answer(
+                    "Write the executive summary for today's market report: breadth, the "
+                    "strongest and weakest names, the hour that carried the session, and "
+                    "what would change the read. Six short paragraphs, no headings.",
+                    context,
+                    api_key=desk.settings.groq_api_key,
+                    model=desk.settings.groq_model,
+                    timeout=min(float(desk.settings.groq_timeout or 30.0), 30.0),
+                )
+                if narrative.get("source") == "groq":
+                    commentary = str(narrative.get("answer") or "")
+                    ai_source = f"Groq ({desk.settings.groq_model})"
+            except Exception as exc:  # noqa: BLE001 - the report must still build
+                LOGGER.warning("report narrative unavailable: %s", exc)
         try:
             artifact = studio.build_session_report(
-                {
-                    "time": clock_info.get("time_label"),
-                    "phase": clock_info.get("phase"),
-                    "timeframe": desk.settings.scan_timeframe,
-                    "scanned": market.get("scanned") or len(rows),
-                    "actionable": market.get("actionable") or 0,
-                    "rows": rows,
-                },
+                context,
                 out_dir=out_dir,
                 bars_by_symbol=bars,
                 plans=plans,
+                commentary=commentary,
                 owner=studio.env_owner(desk.env_path),
+                ai_source=ai_source,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("session report failed: %s", exc)

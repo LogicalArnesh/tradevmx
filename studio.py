@@ -216,11 +216,133 @@ def _norm(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
 
 
+MASTER_CACHE = BASE_DIR / "data" / "nse_equity_master.json"
+MASTER_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+MASTER_TTL_SECONDS = 7 * 24 * 3600
+_master_lock = threading.Lock()
+_master_memo: list[dict[str, str]] | None = None
+
+
+def symbol_master(*, force: bool = False) -> list[dict[str, str]]:
+    """The full NSE cash-equity list, cached on disk for a week.
+
+    The desk ships with a curated universe so search works offline; this adds the
+    remaining listed companies (~2,000) the first time the app can reach NSE.
+    """
+    global _master_memo
+    with _master_lock:
+        if _master_memo is not None and not force:
+            return _master_memo
+        cached: list[dict[str, str]] = []
+        try:
+            if MASTER_CACHE.exists() and (
+                not force
+                and (time.time() - MASTER_CACHE.stat().st_mtime) < MASTER_TTL_SECONDS
+            ):
+                cached = json.loads(MASTER_CACHE.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a corrupt cache is simply rebuilt
+            cached = []
+        if cached:
+            _master_memo = cached
+            return cached
+        fetched: list[dict[str, str]] = []
+        try:
+            import requests
+
+            response = requests.get(
+                MASTER_URL,
+                timeout=8,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (TradeVMx desk)",
+                    "Accept": "text/csv,*/*",
+                },
+            )
+            response.raise_for_status()
+            for index, line in enumerate(response.text.splitlines()):
+                if index == 0 or not line.strip():
+                    continue
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                symbol, name = parts[0].strip(), parts[1].strip()
+                if not symbol or not name:
+                    continue
+                fetched.append(
+                    {"symbol": f"{symbol}.NS", "name": name.title(), "kind": "equity"}
+                )
+        except Exception as exc:  # noqa: BLE001 - offline is a normal state
+            LOGGER.info("NSE symbol master unavailable: %s", exc)
+            fetched = []
+        if fetched:
+            try:
+                MASTER_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                MASTER_CACHE.write_text(json.dumps(fetched), encoding="utf-8")
+            except OSError:
+                pass
+        _master_memo = fetched or cached
+        return _master_memo
+
+
+def remote_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Ask Yahoo Finance for instruments matching a free-text company name."""
+    query = (query or "").strip()
+    if len(query) < 2:
+        return []
+    try:
+        import yfinance as yf
+    except Exception:  # noqa: BLE001
+        return []
+    quotes: list[dict[str, Any]] = []
+    try:
+        searcher = yf.Search(query, max_results=max(limit, 12), news_count=0)
+        quotes = list(getattr(searcher, "quotes", None) or [])
+    except TypeError:
+        try:
+            quotes = list(yf.Search(query).quotes or [])
+        except Exception:  # noqa: BLE001
+            quotes = []
+    except Exception as exc:  # noqa: BLE001 - search is best effort
+        LOGGER.info("remote search failed for %s: %s", query, exc)
+        quotes = []
+    out: list[dict[str, Any]] = []
+    for quote in quotes:
+        try:
+            symbol = str(quote.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            exchange = str(quote.get("exchange") or quote.get("exchDisp") or "").upper()
+            kind = str(quote.get("quoteType") or "equity").lower()
+            if kind == "index":
+                kind = "index"
+            elif kind not in {"equity", "etf", "index"}:
+                kind = "equity"
+            if "NSE" in exchange or symbol.endswith(".NS"):
+                if not symbol.endswith(".NS") and "NS" in exchange:
+                    symbol = f"{symbol}.NS"
+            elif "BSE" in exchange or symbol.endswith(".BO"):
+                if not symbol.endswith(".BO"):
+                    symbol = f"{symbol}.BO"
+            name = str(quote.get("longname") or quote.get("shortname") or symbol)
+            out.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "kind": kind,
+                    "description": f"{name} ({symbol})",
+                    "exchange": exchange,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            continue
+    return out[:limit]
+
+
 def search_instruments(
     query: str,
     *,
     limit: int = 12,
     watchlist: Sequence[Any] = (),
+    wide: bool = True,
 ) -> list[dict[str, Any]]:
     """Return ranked matches for a ticker or company name.
 
@@ -259,6 +381,15 @@ def search_instruments(
     raw = (query or "").strip()
     if not raw:
         return pool[:limit]
+
+    # Only widen with the full listed universe once the user is actually typing:
+    # fetching the NSE master on first focus would stall the dropdown.
+    if wide:
+        try:
+            for item in symbol_master():
+                push(item["symbol"], item["name"], item["kind"])
+        except Exception:  # noqa: BLE001 - offline keeps the curated list
+            pass
 
     needle = _norm(raw)
     bare = raw.upper().replace(".NS", "").strip()
@@ -606,11 +737,147 @@ class PaperPortfolio:
 # AI assistant chamber
 # ---------------------------------------------------------------------------
 _SYSTEM = (
-    "You are TradeVMx, a disciplined Indian equities desk assistant. Answer in "
-    "short, factual paragraphs. Use only the supplied desk data for numbers; if "
-    "something is not in the data, say so. No greetings, no markdown headings, "
-    "no investment advice disclaimers longer than one sentence."
+    "You are TradeVMx, the assistant inside a personal Indian equities desk. You are given "
+    "the desk's live sweep (every tracked instrument with price, change, VWAP, ATR, "
+    "structure, bias, verdict and signals) and, when the user asks about a specific stock, "
+    "a live lookup for that stock.\n"
+    "Rules: use only supplied numbers, never invent prices, targets, news or fundamentals. "
+    "Be concrete: name the instrument, the level and the reason. If the desk data does not "
+    "cover something, say exactly that in one sentence. Write 2-4 short paragraphs of plain "
+    "prose, no markdown headings or bullets, no greetings, no filler. Finish with one "
+    "sentence telling the user what to check next."
 )
+
+_STOPWORDS = {
+    "the", "and", "for", "what", "which", "give", "show", "tell", "today", "todays",
+    "market", "session", "report", "summary", "brief", "stock", "stock's", "stocks",
+    "should", "would", "could", "about", "there", "this", "that", "with", "from",
+    "good", "best", "strongest", "weakest", "risk", "open", "close", "now", "buy",
+    "sell", "hold", "price", "prices", "chart", "page", "pdf", "please", "into",
+    "tomorrow", "tomorrow's", "hour", "peak", "why", "how", "when", "more", "than",
+    "nifty", "bank", "sensex", "desk", "like", "make", "need", "want", "also",
+}
+
+
+def _structure_of(bars: Sequence[dict[str, Any]]) -> str:
+    """Fractal swing labelling: HH/HL, LH/LL, or range."""
+    clean = []
+    for bar in bars or []:
+        try:
+            clean.append((float(bar["high"]), float(bar["low"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if len(clean) < 7:
+        return "range"
+    window = 2
+    highs, lows = [], []
+    for index in range(window, len(clean) - window):
+        high, low = clean[index]
+        neighbours = clean[index - window:index] + clean[index + 1:index + 1 + window]
+        if all(high >= other[0] for other in neighbours):
+            highs.append(high)
+        if all(low <= other[1] for other in neighbours):
+            lows.append(low)
+    if len(highs) < 2 or len(lows) < 2:
+        # A clean trend has no local pivots at all: fall back to the slope of the
+        # series so an uptrend is still labelled HH/HL instead of "range".
+        half = max(1, len(clean) // 2)
+        first = clean[:half]
+        second = clean[-half:]
+        first_mid = sum((h + l) / 2 for h, l in first) / len(first)
+        second_mid = sum((h + l) / 2 for h, l in second) / len(second)
+        change = (second_mid - first_mid) / first_mid if first_mid else 0.0
+        if change > 0.0015:
+            return "HH/HL"
+        if change < -0.0015:
+            return "LH/LL"
+        return "range"
+    higher_highs = highs[-1] > highs[-2]
+    higher_lows = lows[-1] > lows[-2]
+    if higher_highs and higher_lows:
+        return "HH/HL"
+    if not higher_highs and not higher_lows:
+        return "LH/LL"
+    return "range"
+
+
+def snapshot_from_bars(
+    symbol: str,
+    name: str,
+    bars: Sequence[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Turn OHLCV into the same shape the sweep rows use."""
+    clean = [b for b in bars or [] if isinstance(b, dict)]
+    if len(clean) < 3:
+        return None
+    try:
+        closes = [float(b["close"]) for b in clean]
+        highs = [float(b["high"]) for b in clean]
+        lows = [float(b["low"]) for b in clean]
+        volumes = [float(b.get("volume") or 0) for b in clean]
+    except (KeyError, TypeError, ValueError):
+        return None
+    cmp_ = closes[-1]
+    first = closes[0] or cmp_
+    typical = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+    total_volume = sum(volumes)
+    vwap = (
+        sum(t * v for t, v in zip(typical, volumes)) / total_volume
+        if total_volume > 0
+        else sum(typical) / len(typical)
+    )
+    atr = sum(h - l for h, l in zip(highs, lows)) / len(clean)
+    median_volume = sorted(volumes)[len(volumes) // 2] or 1.0
+    structure = _structure_of(clean)
+    if cmp_ > vwap and structure == "HH/HL":
+        bias = "BULLISH"
+    elif cmp_ < vwap and structure == "LH/LL":
+        bias = "BEARISH"
+    else:
+        bias = "NEUTRAL"
+    row = {
+        "symbol": symbol,
+        "name": name or symbol,
+        "cmp": round(cmp_, 2),
+        "change_pct": round((cmp_ - first) / first * 100, 2) if first else 0.0,
+        "bias": bias,
+        "structure": structure,
+        "vwap": round(vwap, 2),
+        "atr": round(atr, 2),
+        "volume_ratio": round(volumes[-1] / median_volume, 2),
+        "day_high": round(max(highs), 2),
+        "day_low": round(min(lows), 2),
+        "ltp_source": "Yahoo Finance (live lookup)",
+        "signals": [],
+        "verdict": ("BUY" if bias == "BULLISH" else "SELL" if bias == "BEARISH" else None),
+        "risk_reward": None,
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    plan = derive_plan(row)
+    if plan:
+        row["verdict"] = plan.get("verdict")
+        row["risk_reward"] = plan.get("risk_reward")
+        row["plan"] = plan
+    row["bars"] = clean
+    return row
+
+
+def detect_symbol(question: str) -> dict[str, Any] | None:
+    """Find the instrument a question is about, without hitting the network."""
+    for token in re.findall(r"[A-Za-z0-9&][A-Za-z0-9&.\-]{1,23}", question or ""):
+        if token.lower() in _STOPWORDS or len(token) < 2:
+            continue
+        try:
+            matches = search_instruments(token, limit=1, wide=False)
+        except Exception:  # noqa: BLE001
+            matches = []
+        if not matches:
+            continue
+        top = matches[0]
+        ticker = str(top.get("symbol") or "").upper().replace(".NS", "")
+        if ticker == token.upper().replace(".NS", "") or _norm(top.get("name")) .startswith(_norm(token)):
+            return top
+    return None
 
 
 def _context_lines(context: dict[str, Any]) -> list[str]:
@@ -634,7 +901,36 @@ def _context_lines(context: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _local_answer(question: str, context: dict[str, Any]) -> str:
+def _focus_answer(focus: dict[str, Any]) -> str:
+    """A single-instrument read, used when the question names one stock."""
+    plan = focus.get("plan") or derive_plan(focus)
+    cmp_ = float(focus.get("cmp") or 0)
+    vwap = float(focus.get("vwap") or 0)
+    distance = ((cmp_ - vwap) / vwap * 100) if vwap else 0.0
+    parts = [
+        f"{focus.get('name')} ({focus.get('symbol')}) is at {_fmt(cmp_)} "
+        f"({float(focus.get('change_pct') or 0):+.2f}%) with {focus.get('bias')} bias and "
+        f"{focus.get('structure')} structure. It is {distance:+.2f}% versus session VWAP "
+        f"({_fmt(vwap)}), ATR {_fmt(focus.get('atr'))}, volume "
+        f"{_fmt(focus.get('volume_ratio'), 2)}x its median. "
+        f"Source: {focus.get('ltp_source') or 'desk sweep'}."
+    ]
+    if plan and plan.get("verdict") in {"BUY", "SELL"}:
+        parts.append(
+            f"Desk read: {plan.get('verdict')} between {_fmt(plan.get('entry_low'))} and "
+            f"{_fmt(plan.get('entry_high'))}, invalidated on a close beyond "
+            f"{_fmt(plan.get('stop_loss'))}, first target {_fmt(plan.get('target_1'))}, "
+            f"second {_fmt(plan.get('target_2'))} (about 1:{float(plan.get('risk_reward') or 0):.2f})."
+        )
+    else:
+        parts.append(
+            "Desk read: no trade. Price, structure and volume do not agree yet, so this stays on "
+            "watch rather than becoming a position."
+        )
+    return " ".join(parts)
+
+
+def _local_answer(question: str, context: dict[str, Any], *, focus: dict[str, Any] | None = None) -> str:
     rows = context.get("rows") or []
     scanned = context.get("scanned") or 0
     actionable = context.get("actionable") or 0
@@ -676,9 +972,11 @@ def _local_answer(question: str, context: dict[str, Any]) -> str:
             + ". "
         )
     tail = (
-        "Ask for the full report to get the charted PDF: one page per instrument with "
-        "entry bands, invalidation, targets, indicators and sources."
+        "Ask for the full report to get the charted PDF: hour-by-hour peaks, one page per "
+        "instrument with entry bands, invalidation, targets, indicators and sources."
     )
+    if focus:
+        return _focus_answer(focus) + " " + header + body + tail
     return header + body + tail
 
 
@@ -689,14 +987,93 @@ def assistant_answer(
     api_key: str = "",
     model: str = "llama-3.3-70b-versatile",
     timeout: float = 40.0,
+    history: Sequence[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Answer a desk question.  Groq first, deterministic digest as fallback."""
+    """Answer a desk question, grounded on the sweep plus a live lookup for the symbol.
+
+    Groq is used when a key is present; the deterministic digest answers otherwise
+    and always states honestly which one produced the text.
+    """
     question = (question or "").strip()
     if not question:
         return {
-            "answer": "Ask about the tape, a symbol, the session so far, or request a daily brief.",
+            "answer": "Ask about the tape, a specific stock, the session so far, or ask for the "
+                      "full report.",
             "source": "local",
         }
+
+    context = dict(context or {})
+    rows = [r for r in (context.get("rows") or []) if isinstance(r, dict)]
+    focus: dict[str, Any] | None = None
+    wanted = detect_symbol(question)
+    if wanted:
+        symbol = str(wanted.get("symbol") or "")
+        for row in rows:
+            if str(row.get("symbol") or "").upper() == symbol.upper():
+                focus = row
+                break
+        if focus is None:
+            try:
+                payload = history_bars(symbol, "15m", 120)
+                focus = snapshot_from_bars(symbol, str(wanted.get("name") or symbol),
+                                           payload.get("bars") or [])
+            except Exception as exc:  # noqa: BLE001 - lookup is best effort
+                LOGGER.info("assistant lookup failed for %s: %s", symbol, exc)
+                focus = None
+
+    lines = _context_lines(context)
+    if focus is not None:
+        plan = focus.get("plan") or derive_plan(focus)
+        lines.append(
+            "Live lookup for the instrument the user asked about: "
+            f"{focus.get('name')} ({focus.get('symbol')}): cmp {focus.get('cmp')}, "
+            f"{focus.get('change_pct')}%, bias {focus.get('bias')}, "
+            f"structure {focus.get('structure')}, vwap {focus.get('vwap')}, "
+            f"atr {focus.get('atr')}, volume ratio {focus.get('volume_ratio')}, "
+            f"day high {focus.get('day_high')}, day low {focus.get('day_low')}, "
+            f"source {focus.get('ltp_source')}"
+        )
+        if plan:
+            lines.append(
+                "Desk plan for it: verdict "
+                f"{plan.get('verdict')}, entry {plan.get('entry_low')} - {plan.get('entry_high')}, "
+                f"invalidation {plan.get('stop_loss')}, targets {plan.get('target_1')} / "
+                f"{plan.get('target_2')}, risk-reward 1:{plan.get('risk_reward')}"
+            )
+        history_peaks = hourly_peaks(focus.get("bars") or [])
+        if history_peaks:
+            loudest = max(history_peaks, key=lambda p: abs(float(p.get("move_pct") or 0)))
+            lines.append(
+                f"Peak hour for it: {loudest['label']} IST, move {float(loudest['move_pct']):+.2f}%"
+            )
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM}]
+    for turn in list(history or [])[-8:]:
+        role = str(turn.get("role") or "").strip().lower()
+        content = str(turn.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content[:2000]})
+    messages.append(
+        {
+            "role": "user",
+            "content": "Desk data:\n" + "\n".join(lines) + f"\n\nQuestion: {question}",
+        }
+    )
+
+    base: dict[str, Any] = {"source": "local"}
+    if focus is not None:
+        base["focus"] = {
+            "symbol": focus.get("symbol"),
+            "name": focus.get("name"),
+            "cmp": focus.get("cmp"),
+            "change_pct": focus.get("change_pct"),
+            "bias": focus.get("bias"),
+            "structure": focus.get("structure"),
+            "vwap": focus.get("vwap"),
+            "verdict": focus.get("verdict"),
+            "source": focus.get("ltp_source"),
+        }
+
     if api_key:
         try:
             from groq import Groq
@@ -704,29 +1081,25 @@ def assistant_answer(
             client = Groq(api_key=api_key, timeout=timeout)
             completion = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM},
-                    {
-                        "role": "user",
-                        "content": "Desk data:\n"
-                        + "\n".join(_context_lines(context))
-                        + f"\n\nQuestion: {question}",
-                    },
-                ],
-                temperature=0.2,
-                max_tokens=700,
+                messages=messages,
+                temperature=0.25,
+                max_tokens=800,
             )
             text = (completion.choices[0].message.content or "").strip()
             if text:
-                return {"answer": text, "source": "groq", "model": model}
+                return {**base, "answer": text, "source": "groq", "model": model}
+            raise ValueError("Groq returned an empty reply")
         except Exception as exc:  # noqa: BLE001 - never break the chamber
             LOGGER.warning("assistant Groq call failed: %s", exc)
             return {
-                "answer": _local_answer(question, context),
+                **base,
+                "answer": _local_answer(question, context, focus=focus),
                 "source": "local",
-                "note": f"Groq unavailable ({str(exc)[:120]}). Local digest used.",
+                "note": f"Groq did not answer ({type(exc).__name__}: {str(exc)[:160]}). "
+                        "This answer came from the local desk engine. Use Test Groq in "
+                        "Configuration to see the exact error.",
             }
-    return {"answer": _local_answer(question, context), "source": "local"}
+    return {**base, "answer": _local_answer(question, context, focus=focus), "source": "local"}
 
 
 # ---------------------------------------------------------------------------
@@ -1356,7 +1729,7 @@ def _candle_drawing(bars: Sequence[dict[str, Any]], width: float = 480.0, height
         return drawing
 
     clean = clean[-80:]
-    pad_left, pad_right, pad_top, vol_h = 4.0, 42.0, 6.0, 26.0
+    pad_left, pad_right, pad_top, vol_h = 4.0, 42.0, 6.0, 34.0
     plot_w = width - pad_left - pad_right
     plot_h = height - pad_top - vol_h - 14
     high = max(item[1] for item in clean)
@@ -1393,6 +1766,301 @@ def _candle_drawing(bars: Sequence[dict[str, Any]], width: float = 480.0, height
     return drawing
 
 
+IST_OFFSET_SECONDS = 5 * 3600 + 30 * 60
+
+
+def hourly_peaks(
+    bars: Sequence[dict[str, Any]],
+    *,
+    offset: int = IST_OFFSET_SECONDS,
+) -> list[dict[str, Any]]:
+    """Group OHLCV bars into IST clock hours, newest last.
+
+    Returns the open/high/low/close, traded volume, the bar range and the move
+    inside each hour, so the report can say *which hour* carried the session.
+    """
+    # Only the most recent session: the history window spans weeks, so mixing
+    # days into "this hour" would be meaningless.
+    stamped: list[tuple[dict[str, Any], int, int]] = []
+    for bar in bars or []:
+        try:
+            stamp = float(bar.get("time"))
+        except (TypeError, ValueError):
+            continue
+        ist = stamp + offset
+        stamped.append((bar, int(ist // 86400), int((ist % 86400) // 3600)))
+    if not stamped:
+        return []
+    latest_day = max(day for _, day, _ in stamped)
+
+    buckets: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    for bar, day, hour in stamped:
+        if day != latest_day:
+            continue
+        try:
+            high = float(bar.get("high"))
+            low = float(bar.get("low"))
+            close = float(bar.get("close"))
+            open_ = float(bar.get("open") or close)
+            volume = float(bar.get("volume") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (high, low, close, open_)):
+            continue
+        bucket = buckets.get(hour)
+        if bucket is None:
+            buckets[hour] = {
+                "hour": hour,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "bars": 1,
+            }
+            order.append(hour)
+        else:
+            bucket["high"] = max(bucket["high"], high)
+            bucket["low"] = min(bucket["low"], low)
+            bucket["close"] = close
+            bucket["volume"] += volume
+            bucket["bars"] += 1
+
+    peaks: list[dict[str, Any]] = []
+    for hour in sorted(order):
+        if not (9 <= hour <= 16):
+            # Outside the 09:15-15:30 IST cash session: pre-open or a vendor
+            # artefact, never a session peak.
+            continue
+        bucket = buckets[hour]
+        opening = bucket["open"] or bucket["close"]
+        move = (bucket["close"] - opening) / opening * 100 if opening else 0.0
+        span = bucket["high"] - bucket["low"]
+        peaks.append(
+            {
+                **bucket,
+                "label": f"{hour:02d}:00–{(hour + 1) % 24:02d}:00",
+                "move_pct": move,
+                "span": span,
+                "span_pct": (span / opening * 100) if opening else 0.0,
+            }
+        )
+    return peaks
+
+
+def session_hourly_map(
+    rows: Sequence[dict[str, Any]],
+    bars_by_symbol: dict[str, Sequence[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Per IST hour across every instrument that has history."""
+    names = {str(row.get("symbol")): row.get("name") or row.get("symbol") for row in rows}
+    merged: dict[int, dict[str, Any]] = {}
+    for symbol, bars in (bars_by_symbol or {}).items():
+        peaks = hourly_peaks(bars)
+        if not peaks:
+            continue
+        top = max(peaks, key=lambda p: abs(float(p.get("move_pct") or 0)))
+        for peak in peaks:
+            hour = int(peak["hour"])
+            slot = merged.setdefault(
+                hour,
+                {
+                    "hour": hour,
+                    "label": peak["label"],
+                    "volume": 0.0,
+                    "span_pct": 0.0,
+                    "count": 0,
+                    "leader": None,
+                },
+            )
+            slot["volume"] += float(peak.get("volume") or 0.0)
+            slot["span_pct"] += float(peak.get("span_pct") or 0.0)
+            slot["move_sum"] = slot.get("move_sum", 0.0) + float(peak.get("move_pct") or 0.0) * max(
+                1.0, float(peak.get("volume") or 0.0)
+            )
+            slot["count"] += 1
+            best = slot.get("leader")
+            if best is None or abs(float(peak.get("move_pct") or 0)) > abs(float(best["move_pct"])):
+                slot["leader"] = {
+                    "symbol": symbol,
+                    "name": names.get(symbol, symbol),
+                    "move_pct": float(peak.get("move_pct") or 0),
+                    "high": float(peak.get("high") or 0),
+                }
+        _ = top
+    out = []
+    for hour in sorted(merged):
+        slot = merged[hour]
+        count = max(1, int(slot["count"]))
+        slot["span_pct"] = slot["span_pct"] / count
+        slot["move_pct"] = (
+            slot.get("move_sum", 0.0) / slot["volume"] if slot["volume"] else 0.0
+        )
+        out.append(slot)
+    return out
+
+
+def _session_map_drawing(rows: Sequence[dict[str, Any]], width: float = 480.0,
+                         height: float = 120.0) -> Any:
+    """Diverging bar chart of every instrument's change — needs no history."""
+    from reportlab.graphics.shapes import Drawing, Line, Rect, String
+    from reportlab.lib import colors
+
+    drawing = Drawing(width, height)
+    ink = colors.HexColor("#0b1220")
+    slate = colors.HexColor("#64748b")
+    grid = colors.HexColor("#e3e9f1")
+    up = colors.HexColor("#12805c")
+    down = colors.HexColor("#b3261e")
+
+    ranked = [r for r in rows if isinstance(r, dict)][:14]
+    if not ranked:
+        drawing.add(String(width / 2, height / 2, "no instruments in this sweep",
+                           textAnchor="middle", fontSize=8, fillColor=slate))
+        return drawing
+
+    label_w, right_pad = 108.0, 46.0
+    plot_w = width - label_w - right_pad
+    row_h = min(14.0, (height - 12) / max(1, len(ranked)))
+    centre = label_w + plot_w / 2
+    biggest = max(1e-6, max(abs(float(r.get("change_pct") or 0)) for r in ranked))
+    drawing.add(Line(centre, 4, centre, 8 + row_h * len(ranked), strokeColor=grid, strokeWidth=0.7))
+    for index, row in enumerate(ranked):
+        change = float(row.get("change_pct") or 0)
+        y = 8 + row_h * (len(ranked) - index - 1)
+        bar_w = (abs(change) / biggest) * (plot_w / 2 - 4)
+        colour = up if change >= 0 else down
+        x = centre if change >= 0 else centre - bar_w
+        drawing.add(Rect(x, y, max(0.6, bar_w), max(2.0, row_h - 4), fillColor=colour, strokeColor=None))
+        drawing.add(String(label_w - 6, y + 2, str(row.get("name") or row.get("symbol"))[:16],
+                           textAnchor="end", fontSize=6.4, fillColor=ink))
+        drawing.add(String(centre + plot_w / 2 + 4, y + 2, f"{change:+.2f}%",
+                           fontSize=6.4, fillColor=colour))
+    return drawing
+
+
+def _hourly_drawing(peaks: Sequence[dict[str, Any]], width: float = 480.0,
+                    height: float = 130.0) -> Any:
+    """Columns: traded volume per IST hour, with the hour range drawn on top."""
+    from reportlab.graphics.shapes import Drawing, Line, Rect, String
+    from reportlab.lib import colors
+
+    drawing = Drawing(width, height)
+    slate = colors.HexColor("#64748b")
+    grid = colors.HexColor("#e3e9f1")
+    teal = colors.HexColor("#0f766e")
+    amber = colors.HexColor("#b45309")
+
+    data = [p for p in peaks if float(p.get("volume") or 0) > 0][:10] or list(peaks)[:10]
+    if not data:
+        drawing.add(String(width / 2, height / 2, "no intraday history available",
+                           textAnchor="middle", fontSize=8, fillColor=slate))
+        return drawing
+
+    pad_l, pad_r, pad_t, pad_b = 34.0, 16.0, 16.0, 16.0
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    max_volume = max((float(p.get("volume") or 0) for p in data), default=1.0) or 1.0
+    max_span = max((float(p.get("span_pct") or 0) for p in data), default=1.0) or 1.0
+    slot = plot_w / len(data)
+    bar_w = max(6.0, slot * 0.5)
+    axis = pad_t + 2.0
+
+    drawing.add(Line(pad_l, axis, pad_l + plot_w, axis, strokeColor=grid, strokeWidth=0.6))
+    points: list[tuple[float, float]] = []
+    for index, peak in enumerate(data):
+        x = pad_l + slot * index + slot / 2
+        volume = float(peak.get("volume") or 0)
+        bar_h = (volume / max_volume) * (plot_h - 10)
+        drawing.add(Rect(x - bar_w / 2, axis, bar_w, max(0.8, bar_h), fillColor=teal, strokeColor=None))
+        span_y = axis + (float(peak.get("span_pct") or 0) / max_span) * (plot_h - 10)
+        points.append((x, span_y))
+        drawing.add(String(x, 3, str(peak.get("label") or "")[:5], textAnchor="middle",
+                           fontSize=6.2, fillColor=slate))
+        drawing.add(String(x, axis + bar_h + 2, f"{float(peak.get('move_pct') or 0):+.2f}%",
+                           textAnchor="middle", fontSize=5.8, fillColor=slate))
+    for index in range(1, len(points)):
+        x0, y0 = points[index - 1]
+        x1, y1 = points[index]
+        drawing.add(Line(x0, y0, x1, y1, strokeColor=amber, strokeWidth=1.2))
+    for x, y in points:
+        drawing.add(Rect(x - 1.6, y - 1.6, 3.2, 3.2, fillColor=amber, strokeColor=None))
+    drawing.add(String(2, axis + plot_h - 14, "volume", fontSize=5.8, fillColor=teal))
+    drawing.add(String(2, axis + plot_h - 24, "range %", fontSize=5.8, fillColor=amber))
+    return drawing
+
+
+def _reference_drawing(row: dict[str, Any], width: float = 480.0, height: float = 96.0) -> Any:
+    """Price vs VWAP vs ATR band — drawn from the sweep when OHLCV is missing."""
+    from reportlab.graphics.shapes import Drawing, Line, Rect, String
+    from reportlab.lib import colors
+
+    drawing = Drawing(width, height)
+    slate = colors.HexColor("#64748b")
+    teal = colors.HexColor("#0f766e")
+    band = colors.HexColor("#eef4f3")
+    ink = colors.HexColor("#0b1220")
+
+    cmp_ = float(row.get("cmp") or 0)
+    vwap = float(row.get("vwap") or 0) or cmp_
+    atr = float(row.get("atr") or 0) or max(cmp_ * 0.01, 0.01)
+    if cmp_ <= 0:
+        drawing.add(String(width / 2, height / 2, "no usable price for this instrument",
+                           textAnchor="middle", fontSize=8, fillColor=slate))
+        return drawing
+
+    low = min(cmp_, vwap) - 1.6 * atr
+    high = max(cmp_, vwap) + 1.6 * atr
+    span = (high - low) or 1.0
+    pad_l, pad_r = 10.0, 58.0
+    plot_w = width - pad_l - pad_r
+
+    def y_of(price: float) -> float:
+        return 14 + (price - low) / span * (height - 32)
+
+    drawing.add(Rect(pad_l, y_of(vwap - atr), plot_w, max(1.0, y_of(vwap + atr) - y_of(vwap - atr)),
+                     fillColor=band, strokeColor=None))
+    drawing.add(Line(pad_l, y_of(vwap), pad_l + plot_w, y_of(vwap), strokeColor=teal,
+                      strokeWidth=1.0, strokeDashArray=[3, 2]))
+    drawing.add(String(width - pad_r + 3, y_of(vwap) - 2, f"VWAP {vwap:,.2f}", fontSize=6.2,
+                       fillColor=teal))
+    marker = y_of(cmp_)
+    drawing.add(Rect(pad_l + plot_w * 0.62, marker - 1.6, 8, 3.2, fillColor=ink, strokeColor=None))
+    drawing.add(String(width - pad_r + 3, marker - 2, f"LTP {cmp_:,.2f}", fontSize=6.2, fillColor=ink))
+    drawing.add(String(pad_l, 3, f"ATR band {vwap - atr:,.2f} – {vwap + atr:,.2f} (no intraday "
+                                f"OHLCV for this instrument)", fontSize=6.0, fillColor=slate))
+    return drawing
+
+
+def derive_plan(row: dict[str, Any]) -> dict[str, Any]:
+    """A plan from the sweep itself, used when the sentinel has no stored plan."""
+    price = float(row.get("cmp") or 0)
+    atr = float(row.get("atr") or (price * 0.01))
+    verdict = str(row.get("verdict") or "").upper()
+    bias = str(row.get("bias") or "").upper()
+    if verdict not in {"BUY", "SELL"}:
+        return {}
+    sign = 1.0 if verdict == "BUY" else -1.0
+    entry_low = price - sign * 0.10 * atr
+    entry_high = price + sign * 0.10 * atr
+    stop = max(price - 1.1 * atr, price - price * 0.03) if sign > 0 else min(
+        price + 1.1 * atr, price + price * 0.03
+    )
+    risk = abs(price - stop) or atr or 1.0
+    return {
+        "verdict": verdict,
+        "bias": bias,
+        "entry_low": round(min(entry_low, entry_high), 2),
+        "entry_high": round(max(entry_low, entry_high), 2),
+        "stop_loss": round(stop, 2),
+        "target_1": round(price + sign * 2 * risk, 2),
+        "target_2": round(price + sign * 3 * risk, 2),
+        "risk_reward": 2.0,
+        "derived": True,
+    }
+
+
 def report_filename(when: datetime | None = None) -> str:
     stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H%M")
     return f"TradeVMx_Market_Report_{stamp}.pdf"
@@ -1408,8 +2076,9 @@ def build_session_report(
     owner: str = "",
     licence: str = LICENCE_ID,
     now: datetime | None = None,
+    ai_source: str = "",
 ) -> dict[str, Any]:
-    """A long-form, charted market report (typically 10-16 pages).
+    """A long-form, charted market report (typically 12-18 pages).
 
     Sections: cover, executive summary, breadth internals, prediction table, one
     charted page per instrument, indicator methodology, and data sources with the
@@ -1487,7 +2156,17 @@ def build_session_report(
     bullish = [r for r in rows if str(r.get("bias", "")).upper() == "BULLISH"]
     bearish = [r for r in rows if str(r.get("bias", "")).upper() == "BEARISH"]
     ranked = sorted(rows, key=lambda r: abs(float(r.get("change_pct") or 0)), reverse=True)
-    deep_dive = [r for r in ranked if bars_by_symbol.get(str(r.get("symbol")))][:10]
+    deep_dive = ranked[:10]
+    hourly = session_hourly_map(rows, bars_by_symbol)
+    peak_hour = max(hourly, key=lambda h: float(h.get("volume") or 0), default=None)
+
+    def plan_for(row: dict[str, Any]) -> dict[str, Any]:
+        """The stored sentinel plan, else one derived from the sweep row."""
+        plan = plans.get(str(row.get("symbol"))) or {}
+        if plan.get("verdict") and plan.get("stop_loss"):
+            return plan
+        derived = derive_plan(row)
+        return {**derived, **{k: v for k, v in plan.items() if v}} if plan else derived
     when_label = when.strftime("%A, %d %B %Y · %H:%M IST")
 
     story: list[Any] = []
@@ -1547,11 +2226,13 @@ def build_session_report(
     story.append(Paragraph("Inside this report", h2))
     contents = [
         "1. Executive summary — the session in one page",
-        "2. Market internals — breadth, structure and volume for every tracked name",
-        "3. Predictions — entry band, invalidation and targets per instrument",
-        f"4. Charted deep dives — {len(deep_dive)} instruments, one page each",
-        "5. Indicator methodology — how every number is computed",
-        "6. Data sources, freshness and disclaimer",
+        "2. Hour by hour — which hour carried the day, and where volume peaked",
+        "3. Market internals — breadth, structure and volume for every tracked name",
+        "4. Predictions — entry band, invalidation and targets per instrument",
+        f"5. Charted deep dives — {len(deep_dive)} instruments, one page each",
+        "6. Session playbook — risk rules, sizing and what would void the read",
+        "7. Indicator methodology — how every number is computed",
+        "8. Data sources, freshness and disclaimer",
     ]
     for item in contents:
         story.append(Paragraph(item, body))
@@ -1572,7 +2253,7 @@ def build_session_report(
     else:
         leader_names = ", ".join(r.get("name", "") for r in bullish[:4]) or "none"
         laggard_names = ", ".join(r.get("name", "") for r in bearish[:4]) or "none"
-        setups = [r for r in rows if r.get("verdict") in {"BUY", "SELL"}]
+        setups = [r for r in rows if str(plan_for(r).get("verdict") or "").upper() in {"BUY", "SELL"}]
         story.append(Paragraph(
             f"The desk swept {scanned} instruments and found {actionable} setups above the "
             f"alert severity floor. {len(above)} of {len(rows)} names trade above session VWAP, "
@@ -1610,10 +2291,95 @@ def build_session_report(
     for note in observations:
         story.append(Paragraph("• " + note, body))
         story.append(Spacer(1, 3))
-    story.append(PageBreak())
+    if ranked:
+        story.append(Paragraph("Top movers at a glance", h2))
+        movers = [[
+            Paragraph("Instrument", cell_head), Paragraph("CMP", cell_head),
+            Paragraph("Move", cell_head), Paragraph("vs VWAP", cell_head),
+            Paragraph("Structure", cell_head), Paragraph("Verdict", cell_head),
+        ]]
+        for row in ranked[:6]:
+            cmp_ = float(row.get("cmp") or 0)
+            vwap = float(row.get("vwap") or 0)
+            gap = ((cmp_ - vwap) / vwap * 100) if vwap else 0.0
+            movers.append([
+                Paragraph(str(row.get("name") or row.get("symbol") or ""), cell),
+                Paragraph(_fmt(cmp_), cell),
+                Paragraph(f"{float(row.get('change_pct') or 0):+.2f}%", cell),
+                Paragraph(f"{gap:+.2f}%", cell),
+                Paragraph(str(row.get("structure") or "—"), cell),
+                Paragraph(str(row.get("verdict") or (plan_for(row).get("verdict")) or "watch"), cell),
+            ])
+        movers_table = Table(movers, colWidths=[46 * mm, 26 * mm, 24 * mm, 26 * mm, 28 * mm, 24 * mm],
+                             repeatRows=1)
+        movers_table.setStyle(table_style())
+        story.append(movers_table)
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(
+            "The movers table ranks by absolute change, because that is where risk and opportunity "
+            "were actually repriced this session. A name can lead the table and still be a poor "
+            "trade: check its VWAP position and structure in section 3 and its plan in section 4 "
+            "before acting on any of it.", small))
+    story.append(Spacer(1, 10))
+
+    # ------------------------------------------------------- hourly peaks
+    story.append(Paragraph("2. Hour by hour — where the session peaked", h1))
+    story.append(Paragraph(
+        "Each column aggregates every instrument's bars into IST clock hours: the teal column "
+        "is traded volume, the amber column is the average high-low range. Read it to see which "
+        "hour carried the day, then check the table for the instrument that made the move.", small))
+    story.append(Spacer(1, 6))
+    if hourly:
+        story.append(_hourly_drawing(hourly, width=174 * mm, height=72 * mm))
+        story.append(Spacer(1, 8))
+        hour_table = [[
+            Paragraph("IST hour", cell_head), Paragraph("Traded volume", cell_head),
+            Paragraph("Avg range %", cell_head), Paragraph("Biggest mover", cell_head),
+            Paragraph("Move", cell_head), Paragraph("High", cell_head),
+        ]]
+        for slot in hourly:
+            leader = slot.get("leader") or {}
+            hour_table.append([
+                Paragraph(slot.get("label") or "—", cell),
+                Paragraph(f"{float(slot.get('volume') or 0):,.0f}", cell),
+                Paragraph(f"{float(slot.get('span_pct') or 0):.2f}%", cell),
+                Paragraph(str(leader.get("name") or "—"), cell),
+                Paragraph(f"{float(leader.get('move_pct') or 0):+.2f}%" if leader else "—", cell),
+                Paragraph(_fmt(leader.get("high")) if leader else "—", cell),
+            ])
+        table = Table(hour_table, colWidths=[26 * mm, 34 * mm, 26 * mm, 42 * mm, 22 * mm, 24 * mm],
+                      repeatRows=1)
+        table.setStyle(table_style())
+        story.append(table)
+        if peak_hour:
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(
+                f"<b>Peak hour:</b> {peak_hour.get('label')} IST traded the most volume "
+                f"({float(peak_hour.get('volume') or 0):,.0f} shares/contracts across the tracked "
+                f"names) with the widest average range "
+                f"({float(peak_hour.get('span_pct') or 0):.2f}%). "
+                + (
+                    f"The move inside that hour belonged to "
+                    f"{(peak_hour.get('leader') or {}).get('name')} at "
+                    f"{float((peak_hour.get('leader') or {}).get('move_pct') or 0):+.2f}%."
+                    if peak_hour.get("leader") else ""
+                ), body))
+    else:
+        story.append(Paragraph(
+            "Intraday OHLCV was not returned for any instrument when this report was built, so "
+            "the hour-by-hour profile is unavailable. The session map below still shows every "
+            "instrument's move, and the deep dives fall back to a VWAP/ATR reference chart. "
+            "Rebuild the report while the market is open to get the hourly detail.", body))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Session map — every instrument's move", h2))
+    story.append(_session_map_drawing(rows, width=174 * mm, height=68 * mm))
+    story.append(Paragraph(
+        "Green bars are advancing instruments, red bars declining; length is the size of the move. "
+        "This chart is drawn from the sweep itself and needs no vendor history.", small))
+    story.append(Spacer(1, 10))
 
     # ------------------------------------------------------- market internals
-    story.append(Paragraph("2. Market internals", h1))
+    story.append(Paragraph("3. Market internals", h1))
     story.append(Paragraph(
         "Every tracked instrument with the readings the desk uses: last price, change, "
         "directional bias, swing structure, distance from VWAP, ATR and volume versus its "
@@ -1654,13 +2420,13 @@ def build_session_report(
     story.append(PageBreak())
 
     # ----------------------------------------------------------- predictions
-    story.append(Paragraph("3. Predictions and trade plans", h1))
+    story.append(Paragraph("4. Predictions and trade plans", h1))
     story.append(Paragraph(
         "Plans are produced by the desk engine: ATR-based entry bands, invalidation at the "
         "swing that would break the thesis, and two targets. Risk-reward is measured against "
-        "target 1. Where a plan carries an AI verdict, the model name is listed in section 6.", small))
+        "target 1. The AI narrative source, when one was used, is named in section 8.", small))
     story.append(Spacer(1, 6))
-    plan_rows = [r for r in rows if plans.get(str(r.get("symbol"))) or r.get("verdict")]
+    plan_rows = [r for r in rows if plan_for(r)]
     if plan_rows:
         pred = [[
             Paragraph("Instrument", cell_head), Paragraph("Verdict", cell_head),
@@ -1669,7 +2435,7 @@ def build_session_report(
             Paragraph("R:R", cell_head),
         ]]
         for row in plan_rows:
-            plan = plans.get(str(row.get("symbol"))) or {}
+            plan = plan_for(row)
             entry = "—"
             if plan.get("entry_low") is not None and plan.get("entry_high") is not None:
                 entry = f"{_fmt(plan.get('entry_low'))} – {_fmt(plan.get('entry_high'))}"
@@ -1690,26 +2456,47 @@ def build_session_report(
         )
         pred_table.setStyle(table_style())
         story.append(pred_table)
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Why these plans", h2))
+        for row in plan_rows[:6]:
+            plan = plan_for(row)
+            vwap = float(row.get("vwap") or 0)
+            cmp_ = float(row.get("cmp") or 0)
+            gap = ((cmp_ - vwap) / vwap * 100) if vwap else 0.0
+            side = str(plan.get("verdict") or "").upper()
+            reason = (
+                f"<b>{row.get('name')}</b> — {side} because price is "
+                f"{'above' if gap >= 0 else 'below'} VWAP by {abs(gap):.2f}% with "
+                f"{row.get('structure') or 'range'} structure and "
+                f"{_fmt(row.get('volume_ratio'), 2)}x median volume. "
+                f"Invalidation sits at {_fmt(plan.get('stop_loss'))}, which is "
+                f"{abs(cmp_ - float(plan.get('stop_loss') or cmp_)):.2f} points and "
+                f"{(abs(cmp_ - float(plan.get('stop_loss') or cmp_)) / cmp_ * 100) if cmp_ else 0:.2f}% "
+                f"away; target 1 pays {abs(float(plan.get('target_1') or cmp_) - cmp_):.2f} points."
+            )
+            story.append(Paragraph(reason, body))
+            story.append(Spacer(1, 4))
     else:
         story.append(Paragraph(
             "No plan cleared the severity floor in this sweep. The internals table above still "
             "shows structure and VWAP position for every name.", body))
     story.append(PageBreak())
 
-    # ------------------------------------------------------------- deep dives
-    story.append(Paragraph("4. Charted deep dives", h1))
+    # ------------------------------------------------------------- deep dives    story.append(Paragraph("5. Charted deep dives", h1))
     story.append(Paragraph(
         "One page per instrument: the intraday candles the desk actually read, the indicator "
-        "panel behind the verdict, the live signals, and the plan with its invalidation.", small))
-    story.append(PageBreak())
+        "panel behind the verdict, the live signals, and the plan with its invalidation. "
+        "Where the vendor returned no OHLCV, the page falls back to a VWAP/ATR reference "
+        "chart drawn from the sweep itself, so the report never ships a blank chart.", small))
+    story.append(Spacer(1, 6))
     if not deep_dive:
         story.append(Paragraph(
-            "No OHLCV history was available for these instruments when the report was built. "
-            "Open the symbol in the Studio to pull history, then rebuild the report.", body))
+            "No instruments were tracked when this report was built. Arm the desk, run a scan, "
+            "then rebuild the report.", body))
         story.append(PageBreak())
     for row in deep_dive:
         symbol = str(row.get("symbol"))
-        plan = plans.get(symbol) or {}
+        plan = plan_for(row)
         bars = bars_by_symbol.get(symbol) or []
         story.append(Paragraph(
             f"{row.get('name') or symbol} <font size=9 color='#64748b'>({symbol})</font>", h1))
@@ -1718,11 +2505,28 @@ def build_session_report(
             f"{row.get('bias') or '—'} · structure {row.get('structure') or '—'} · "
             f"source {row.get('ltp_source') or 'desk sweep'}", small))
         story.append(Spacer(1, 6))
-        story.append(_candle_drawing(bars, width=174 * mm, height=64 * mm))
-        story.append(Spacer(1, 4))
-        story.append(Paragraph(
-            f"{len(bars)} bars · timeframe {context.get('timeframe') or '15m'} · "
-            "candles with the desk's volume panel below price.", small))
+        if len(bars) >= 3:
+            story.append(_candle_drawing(bars, width=174 * mm, height=84 * mm))
+            story.append(Spacer(1, 4))
+            story.append(Paragraph(
+                f"{len(bars)} bars · timeframe {context.get('timeframe') or '15m'} · "
+                "candles with the desk's volume panel below price.", small))
+            peaks = hourly_peaks(bars)
+            if peaks:
+                loudest = max(peaks, key=lambda p: abs(float(p.get("move_pct") or 0)))
+                busiest = max(peaks, key=lambda p: float(p.get("volume") or 0))
+                story.append(Paragraph(
+                    f"<b>Peak hour in this instrument:</b> {loudest['label']} IST moved "
+                    f"{float(loudest['move_pct']):+.2f}% between "
+                    f"{_fmt(loudest['low'])} and {_fmt(loudest['high'])}; volume peaked at "
+                    f"{busiest['label']} IST. That is the hour the desk would have transacted "
+                    f"this name.", body))
+        else:
+            story.append(_reference_drawing(row, width=174 * mm, height=64 * mm))
+            story.append(Paragraph(
+                "No intraday OHLCV was returned for this instrument at build time, so this page "
+                "shows the price/VWAP/ATR reference band from the live sweep instead of candles. "
+                "The indicator panel and plan below are unchanged.", small))
         story.append(Spacer(1, 8))
         story.append(Paragraph("Indicator panel", h2))
         indicator_rows = [
@@ -1780,8 +2584,51 @@ def build_session_report(
                 "floor, so it is monitored rather than traded.", body))
         story.append(PageBreak())
 
+    # -------------------------------------------------------------- playbook
+    story.append(Paragraph("6. Session playbook and risk rules", h1))
+    story.append(Paragraph(
+        "The report is only useful if the desk follows the same rules every day. These are the "
+        "rules this document was produced under.", small))
+    rules = [
+        ("Risk per idea", "The invalidation distance defines risk. Size the position so a full "
+                          "stop costs the same small fraction of the account on every trade; "
+                          "never widen the stop to avoid being stopped."),
+        ("Entry discipline", "Plans are written as a band, not a price. If price never trades "
+                             "into the band, there is no trade - chasing a missed band is not a "
+                             "setup."),
+        ("Invalidation", "A close beyond the stated stop voids the thesis, not a wick. Re-entry "
+                         "requires a fresh structure and a fresh plan."),
+        ("Confirmation", "VWAP position and structure must agree with the verdict. When they "
+                         "disagree, the instrument is monitored, not traded."),
+        ("Event risk", "No new intraday position is carried into a scheduled event, an earnings "
+                       "print, or a gap through the invalidation level."),
+        ("Review", "At the close, every plan is marked against the session: did it trigger, did "
+                   "it hit target or stop, and what would have been done differently."),
+    ]
+    for name, text in rules:
+        story.append(Paragraph(name, h2))
+        story.append(Paragraph(text, body))
+    story.append(Paragraph("What would change this read", h2))
+    change_notes = []
+    if rows:
+        change_notes.append(
+            f"A decisive close below VWAP for the {len(above)} of {len(rows)} names currently "
+            "above it would flip the breadth read within an hour.")
+    if bearish:
+        change_notes.append(
+            "The laggards are " + ", ".join(r.get("name", "") for r in bearish[:3]) +
+            "; a squeeze there against the invalidation levels would signal short-covering "
+            "rather than fresh demand.")
+    change_notes.append(
+        "A session that prints outside the projected ATR band means the volatility estimate was "
+        "too low: re-check the ATR before honouring any target in this document.")
+    for note in change_notes:
+        story.append(Paragraph("• " + note, body))
+        story.append(Spacer(1, 3))
+    story.append(PageBreak())
+
     # ------------------------------------------------------------ methodology
-    story.append(Paragraph("5. Indicator methodology", h1))
+    story.append(Paragraph("7. Indicator methodology", h1))
     method = [
         ("VWAP", "Session volume-weighted average price, anchored at the 09:15 IST open. "
                   "Price above VWAP means buyers have paid up on volume; the desk treats the "
@@ -1806,11 +2653,20 @@ def build_session_report(
     for name, description in method:
         story.append(Paragraph(name, h2))
         story.append(Paragraph(description, body))
-    story.append(PageBreak())
+    story.append(Spacer(1, 10))
 
     # ---------------------------------------------------------------- sources
-    story.append(Paragraph("6. Data sources, freshness and disclaimer", h1))
+    story.append(Paragraph("8. Data sources, freshness and disclaimer", h1))
     story.append(Paragraph("Sources used to build this report", h2))
+    ai_line = (
+        f"<b>AI narrative</b> — {ai_source} supplied the written commentary for this document "
+        "(the label comes from the desk, so this is what actually answered). No number in this "
+        "report comes from the model: it only explains the data supplied to it."
+        if ai_source else
+        "<b>AI narrative</b> — not used. No Groq key was invokable when this report was built, so "
+        "the deterministic rule engine wrote every sentence. Add a working GROQ_API_KEY in "
+        "Configuration to get model-written commentary."
+    )
     sources = [
         "<b>NSE India</b> (via nsepython) — live quotes, index levels and traded volume for "
         "NSE-listed instruments.",
@@ -1818,9 +2674,7 @@ def build_session_report(
         "indicator; the fallback when the exchange endpoint is rate-limited.",
         "<b>Desk engine</b> — VWAP, ATR, swing structure, volume ratio, severity scoring, entry "
         "bands, invalidation and targets, computed locally from the bars above.",
-        "<b>AI narrative</b> — Groq-hosted model when a key is configured; otherwise the "
-        "deterministic rule engine writes the summary. No number in this report comes from the "
-        "model: it only explains the data supplied to it.",
+        ai_line,
         "<b>Report engine</b> — reportlab, rendered locally on this machine. Nothing is uploaded.",
     ]
     for item in sources:

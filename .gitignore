@@ -24,3 +24,6 @@ build/
 *.spec
 paper_book.json
 .deps/
+
+# NSE symbol master cache (rebuilt automatically)
+data/

@@ -71,6 +71,7 @@ def check(repo: str, current: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[
         "notes": "",
         "published_at": None,
         "error": None,
+        "assets": [],
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if not repo.strip():
@@ -103,6 +104,20 @@ def check(repo: str, current: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[
     )
     payload["published_at"] = release.get("published_at")
     payload["notes"] = str(release.get("body") or "")[:1200]
+    assets: list[dict[str, object]] = []
+    for asset in release.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = str(asset.get("browser_download_url") or "")
+        if not name or not url:
+            continue
+        try:
+            size = int(asset.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        assets.append({"name": name, "url": url, "size": size})
+    payload["assets"] = assets
     payload["available"] = bool(tag) and is_newer(tag, current)
     return payload
 

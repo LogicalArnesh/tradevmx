@@ -31,7 +31,52 @@ jobs:
           files: dist/tradevmx-*.zip
           generate_release_notes: true
           body: |
-            Download `tradevmx-${{ github.ref_name }}.zip`, unzip it, and run
-            `run_tradevmx.bat` (Windows) or `./run_tradevmx.sh` (macOS/Linux).
-            Existing installs can drop the new files over the old folder; your
-            `.env` is preserved.
+            Two downloads:
+
+            * **`TradeVMx-<version>-windows.zip`** — the standalone Windows app. Unzip
+              it anywhere and double-click `TradeVMx.exe`. No Python install needed.
+            * **`tradevmx-<version>.zip`** — the Python source bundle. Unzip it and run
+              `run_tradevmx.bat` (Windows) or `./run_tradevmx.sh` (macOS/Linux).
+
+            Drop the new files over the old folder to update; your `.env` is preserved.
+
+  windows-app:
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Generate the Windows icon
+        run: |
+          python -c "from PIL import Image; Image.open('web/static/logo.png').save('web/static/logo.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Build the standalone app
+        run: python -m PyInstaller TradeVMx.spec --noconfirm --log-level WARN
+
+      - name: Package it
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $name = "TradeVMx-$version-windows"
+          if (-not (Test-Path "dist/TradeVMx/TradeVMx.exe")) {
+            throw "PyInstaller did not produce dist/TradeVMx/TradeVMx.exe"
+          }
+          # The launcher reads .env from its own folder, so ship a template next to it.
+          if (Test-Path ".env.example") { Copy-Item ".env.example" "dist/TradeVMx/.env.example" }
+          Copy-Item "README.md" "dist/TradeVMx/README.md"
+          Compress-Archive -Path "dist/TradeVMx/*" -DestinationPath "dist/$name.zip"
+          Get-Item "dist/$name.zip" | Select-Object Name, Length
+
+      - name: Attach the Windows app to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TradeVMx-*-windows.zip

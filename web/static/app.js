@@ -55,6 +55,7 @@
   let symbolList = [];
   let autocomplete = null;
   let autocompleteIndex = -1;
+  let chatHistory = [];      // [{role, content}] sent back so the assistant keeps context
   let busy = false;
 
   /* ------------------------------------------------------------- helpers */
@@ -297,18 +298,39 @@
     });
   }
 
+  let searchSeq = 0;
+
   async function onSearchInput() {
     const input = $("#symbol-search");
     if (!input) return;
     const query = input.value.trim();
+    const hint = $("#symbol-hint");
+    const seq = ++searchSeq;
+    if (hint) hint.textContent = query ? "Searching every NSE stock…" : "";
     let matches;
+    let source = "desk";
     try {
       const data = await api("/api/search?q=" + encodeURIComponent(query) + "&limit=12");
       matches = data.matches || [];
+      source = data.source || "desk";
     } catch (error) {
       matches = symbolList.filter((entry) =>
         entry.symbol.toUpperCase().includes(query.toUpperCase()) ||
         entry.name.toUpperCase().includes(query.toUpperCase())).slice(0, 12);
+    }
+    if (seq !== searchSeq) return;   // a newer keystroke already won
+    if (query && !matches.length) {
+      matches = [{
+        symbol: query.toUpperCase().replace(/\.NS$/, "") + (/^[\^\d]/.test(query) ? "" : ".NS"),
+        name: "Load " + query.toUpperCase() + " directly",
+        kind: "direct",
+      }];
+    }
+    if (hint) {
+      hint.textContent = !query ? ""
+        : matches.length
+          ? matches.length + " matches" + (source === "desk+yahoo" ? " · Yahoo Finance included" : " · NSE list")
+          : "no match — press Enter to try the symbol anyway";
     }
     renderAutocomplete(input, matches);
   }
@@ -535,7 +557,60 @@
       ["Drift in window", pct(drift), "close vs window open"],
       ["Best window", window, "highest average range"],
     ];
-    host.innerHTML = rows.map(([label, value, note]) =>
+
+    // ---- the actual prediction, with the instrument it belongs to
+    const first = Number(bars[0].close) || close;
+    const lastBars = bars.slice(-4);
+    const recent = lastBars.reduce((sum, bar) => sum + (Number(bar.close) || 0), 0) /
+      Math.max(1, lastBars.length);
+    const vwap = bars.reduce((sum, bar) => {
+      const typical = ((Number(bar.high) || close) + (Number(bar.low) || close) +
+        (Number(bar.close) || close)) / 3;
+      return sum + typical * (Number(bar.volume) || 1);
+    }, 0) / Math.max(1, bars.reduce((sum, bar) => sum + (Number(bar.volume) || 1), 0));
+    const higherHighs = Number(bars[bars.length - 1].high) > Number(bars[bars.length - 2].high);
+    const higherLows = Number(bars[bars.length - 1].low) > Number(bars[bars.length - 2].low);
+    const aboveVwap = close > vwap;
+    const verdict = aboveVwap && recent > vwap && higherLows
+      ? "BUY" : (!aboveVwap && recent < vwap && !higherLows ? "SELL" : "NO TRADE");
+    const horizonMinutes = Math.max(15, Number(visibleBars) * 15) > 60 ? "next 60 minutes" : "next 30 minutes";
+    const plan = verdict === "NO TRADE" ? null : (() => {
+      const sign = verdict === "BUY" ? 1 : -1;
+      const entryLow = close - sign * 0.15 * atr;
+      const entryHigh = close + sign * 0.15 * atr;
+      const stop = close - sign * 1.2 * atr;
+      const t1 = close + sign * 2.4 * atr;
+      const t2 = close + sign * 3.6 * atr;
+      return { entryLow, entryHigh, stop, t1, t2 };
+    })();
+    const instrument = chart ? (chart.name + " (" + chart.symbol + ")") : "No instrument";
+    const context = (chart ? chart.name + " · " + chart.timeframe + " · " + bars.length +
+      " bars · " + (chart.source || "history") : "load a symbol");
+
+    const head =
+      '<div class="expect-head">' +
+        '<div class="expect-instrument">' + esc(instrument) +
+          '<span class="muted small"> ' + esc(context) + "</span></div>" +
+        '<div class="expect-verdict ' + (verdict === "BUY" ? "is-up" : verdict === "SELL" ? "is-down" : "is-flat") + '">' +
+          esc(verdict) + '<span class="muted small"> for the ' + esc(horizonMinutes) + "</span></div>" +
+      "</div>" +
+      '<div class="muted small">How to read it: the verdict compares the last close, the recent ' +
+      "average and session VWAP in the window above. A price still inside the entry band is tradable; " +
+      "outside it, the setup has either not triggered or is already extended.</div>";
+
+    const planRows = plan ? [
+      ["Entry band", num(plan.entryLow) + " – " + num(plan.entryHigh), verdict + " zone, 0.15 × ATR"],
+      ["Invalidation", num(plan.stop), "1.2 × ATR against the position"],
+      ["Target 1", num(plan.t1), "about 1:2 reward-to-risk"],
+      ["Target 2", num(plan.t2), "trail beyond T1"],
+      ["Session VWAP", num(vwap), aboveVwap ? "price above VWAP" : "price below VWAP"],
+      ["Position size", "risk ÷ " + num(Math.abs(close - plan.stop)), "stop distance per share"],
+    ] : [
+      ["Why no trade", "price and VWAP disagree", "wait for a reclaim or a rejection"],
+      ["Session VWAP", num(vwap), aboveVwap ? "holding above" : "pressing below"],
+    ];
+
+    host.innerHTML = head + planRows.concat(rows).map(([label, value, note]) =>
       '<div class="expect-row"><span class="stat-label">' + esc(label) + "</span>" +
       '<span class="stat-value">' + esc(value) + "</span>" +
       '<span class="stat-note">' + esc(note) + "</span></div>").join("");
@@ -628,17 +703,59 @@
     const text = String(question || "").trim();
     if (!text) return;
     pushBubble(text, "me");
+    chatHistory.push({ role: "user", content: text });
     const button = $("#assistant-send");
     const restore = setBusy(button, "Thinking…");
+    clearChips();
     try {
-      const data = await api("/api/assistant", { method: "POST", body: { question: text } });
-      pushBubble(data.answer + (data.source === "local" ? "\n\n(local digest — add a Groq key for model answers)" : ""), "bot");
+      const data = await api("/api/assistant", {
+        method: "POST",
+        body: { question: text, history: chatHistory.slice(-8) },
+      });
+      const sourceLine = data.source === "groq"
+        ? "via " + (data.model || "Groq")
+        : "local desk engine" + (data.note ? " — " + data.note : "");
+      pushBubble(data.answer, "bot");
+      pushMeta(sourceLine + (data.focus ? " · looked up " + data.focus.symbol : ""));
+      chatHistory.push({ role: "assistant", content: String(data.answer || "").slice(0, 2000) });
       if (data.report) addReportLink(data.report);
+      if (Array.isArray(data.suggestions) && data.suggestions.length) {
+        renderChips(data.suggestions);
+      }
     } catch (error) {
       pushBubble("I could not answer: " + error.message, "bot");
     } finally {
       restore();
     }
+  }
+
+  function pushMeta(text) {
+    const log = $("#assistant-log");
+    if (!log || !text) return;
+    const node = document.createElement("div");
+    node.className = "bubble-meta";
+    node.textContent = text;
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function clearChips() {
+    const host = $("#assistant-chips");
+    if (host) host.innerHTML = "";
+  }
+
+  function renderChips(suggestions) {
+    const host = $("#assistant-chips");
+    if (!host) return;
+    host.innerHTML = "";
+    suggestions.slice(0, 4).forEach((text) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chat-chip";
+      chip.textContent = text;
+      chip.addEventListener("click", () => ask(text));
+      host.appendChild(chip);
+    });
   }
 
   function addReportLink(report) {
@@ -806,8 +923,8 @@
           banner.classList.remove("hidden");
           banner.innerHTML = '<span class="banner-dot"></span><span><b>v' + esc(data.latest) +
             "</b> is available — this build is v" + esc(data.current) + ".</span>" +
-            '<a class="btn small" href="' + esc(data.url) +
-            '" target="_blank" rel="noopener noreferrer">Download</a>';
+            '<button id="download-update" class="btn small" type="button">Download update</button>';
+          $("#download-update")?.addEventListener("click", downloadUpdate);
         } else {
           banner.classList.add("hidden");
         }
@@ -824,6 +941,47 @@
       }
     } catch (error) {
       if (force) toast(error.message, "error");
+    }
+  }
+
+  async function testGroq() {
+    const button = $("#test-groq");
+    const status = $("#groq-status");
+    const restore = setBusy(button, "Testing…");
+    if (status) status.textContent = "";
+    try {
+      const data = await api("/api/ai/test", { method: "POST", body: {} });
+      if (status) {
+        status.textContent = data.ok
+          ? "Groq replied with " + data.model + " · working"
+          : "Groq failed: " + data.detail;
+        status.className = "small " + (data.ok ? "ok" : "error");
+      }
+      toast(data.ok ? "Groq is working (" + data.model + ")" : "Groq failed: " + data.detail,
+        data.ok ? "ok" : "error");
+    } catch (error) {
+      if (status) {
+        status.textContent = "Groq test failed: " + error.message;
+        status.className = "small error";
+      }
+      toast(error.message, "error");
+    } finally {
+      restore();
+    }
+  }
+
+  async function downloadUpdate() {
+    const button = $("#download-update");
+    const restore = setBusy(button, "Downloading…");
+    try {
+      const data = await api("/api/update/download", { method: "POST", body: {} });
+      toast("Update saved to " + data.path, "ok");
+      pushBubble("Update " + data.version + " saved to " + data.path +
+        ". Close TradeVMx, extract it over the old folder (keep .env), and start it again.", "bot");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      restore();
     }
   }
 
@@ -1093,6 +1251,8 @@
     $("#digest-pdf")?.addEventListener("click", digestPdf);
     $("#digest-email")?.addEventListener("click", digestEmail);
     $("#check-update")?.addEventListener("click", () => pollUpdate(true));
+    $("#test-groq")?.addEventListener("click", testGroq);
+    $("#download-update")?.addEventListener("click", downloadUpdate);
     $("#autostart-toggle")?.addEventListener("click", toggleAutostart);
     $("#create-shortcut")?.addEventListener("click", createShortcut);
     $("#trade-buy")?.addEventListener("click", () => trade("BUY"));
@@ -1157,7 +1317,8 @@
     $("#tape")?.addEventListener("click", (event) => {
       const reportButton = event.target.closest("[data-report]");
       if (reportButton) {
-        window.open("/api/report?symbol=" + encodeURIComponent(reportButton.dataset.report), "_blank", "noopener");
+        downloadPdf("/api/report?symbol=" + encodeURIComponent(reportButton.dataset.report),
+          "TradeVMx_Report.pdf").catch((error) => toast(error.message, "error"));
         return;
       }
       const row = event.target.closest(".row");

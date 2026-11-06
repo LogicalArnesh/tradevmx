@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.4.0 — assistant that remembers, live stock search, real charts
+
+* **The assistant is a conversation now.** Every question sends the last eight turns
+  back with it, the reply states whether Groq or the local engine produced it, and a
+  row of follow-up chips keeps the thread going. Ask about a stock that is not in the
+  sweep (e.g. *"what about Adani Enterprises?"*) and the desk fetches that symbol's
+  live OHLCV, computes VWAP/ATR/structure and answers — instead of saying it has no data.
+* **"Test Groq" in Configuration** proves the key and model, and prints the exact error
+  when it fails (bad key, retired model, rate limit). The PDF only credits Groq when
+  Groq actually wrote the commentary; otherwise it says the rule engine did.
+* **Search covers every listed NSE stock.** The app now pulls the NSE equity master
+  (~2,000 symbols) and caches it for a week, and falls back to Yahoo Finance search for
+  anything else. The dropdown shows match counts, the source, and a "load this symbol
+  directly" row so an unknown ticker still opens.
+* **The prediction pane says what it is predicting.** It now leads with the instrument,
+  timeframe, bar count and data source, then a BUY / SELL / NO TRADE verdict for the
+  next 30-60 minutes, the entry band, invalidation, both targets, VWAP and stop distance.
+* **The report always has charts and a real hour-by-hour brief.** New section 2 plots
+  traded volume per IST hour with the average range overlay, a table of the biggest
+  mover inside each hour, and a peak-hour callout. A session-map chart of every
+  instrument's move needs no vendor history, and any instrument without OHLCV gets a
+  VWAP/ATR reference chart instead of a blank page. Front and back matter flow
+  together, so a normal 10-12 name sweep produces 15-18 pages.
+* **Updates download inside the app** — `POST /api/update/download` saves the latest
+  release asset to your Downloads folder and tells you where it is; nothing opens a
+  browser. The banner uses that button instead of a link.
+* **Standalone Windows app.** The release now builds a PyInstaller bundle on a Windows
+  runner and publishes `TradeVMx-<version>-windows.zip`; unzip and double-click
+  `TradeVMx.exe`, no Python install required.
+
 ## v1.3.0 — layout fix and full market report
 
 * **Fixed the overlapping logo and chart.** `.brand-logo` had no CSS rule, so the
