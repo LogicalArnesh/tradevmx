@@ -16,13 +16,12 @@ Security posture (localhost, single operator)
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import secrets
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -31,26 +30,24 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-import settings_store
-import asyncio
 import json
 import logging
 import math
 import secrets
 import threading
-from collections import deque
-from datetime import datetime
-from functools import wraps
-from pathlib import Path
-from typing import Any, Callable
-from urllib.parse import urlparse
-
-from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template, request, send_file
-
 import settings_store
-import updater
+from updater import check_cached
+from version import __version__ as APP_VERSION
+from config import IST, configure_logging, UnknownInstrument, get_settings
+from market_scanner import MarketScanner, ScanReport
+from notify import LocalNotifier
+from report_engine import ReportEngine
+from alerts import AlertDispatcher
+from ai_engine import GroqBrain
+from sentinel import Sentinel, SentinelEvent
 
+
+LOGGER = logging.getLogger(__name__)
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
@@ -61,7 +58,7 @@ DEFAULT_PORT = 8765
 # release branch is not yet published. The desktop launcher keeps its own
 # copy of the state so the update banner shows the correct status immediately.
 
-UPDATE_STATE_FILE = Path.home() / ".tradevmx" / "update.state.json"
+UPDATE_STATE_FILE = Path.home() / ".tradevmx" / "update.state.json"  # project dir on failure
 
 
 def _read_update_state() -> dict:
@@ -72,10 +69,20 @@ def _read_update_state() -> dict:
 
 
 def _write_update_state(payload: dict) -> None:
-    UPDATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = UPDATE_STATE_FILE.with_suffix(UPDATE_STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(UPDATE_STATE_FILE)
+    # Fall back to the project reports/ dir when the home directory is not writable
+    # (cloud sandbox), so the in-app update check never fails on I/O.
+    target = UPDATE_STATE_FILE
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        fallback = Path(__file__).resolve().parent / "reports" / "update.state.json"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fallback.with_name(fallback.name + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, fallback)
+
+import os
 
 
 def _local_check(repo: str, current: str, force: bool = False) -> dict:
@@ -87,6 +94,7 @@ def _local_check(repo: str, current: str, force: bool = False) -> dict:
     """
     if not repo:
         return {
+            "configured": False,
             "available": False,
             "current": current,
             "latest": None,
@@ -95,11 +103,11 @@ def _local_check(repo: str, current: str, force: bool = False) -> dict:
             "error": None,
         }
     if force:
-        return updater.check_backend(repo, current, force=True)
+        return updater.check_cached(repo, current, force=True)
     cached = _read_update_state()
     if cached.get("current") == current:
         return cached
-    return updater.check_backend(repo, current, force=False)
+    return updater.check_cached(repo, current, force=False)
 
 
 def _schedule_update_check(app) -> None:
@@ -144,7 +152,7 @@ class DeskState:
     def __init__(self, env_path: Path | None = None) -> None:
         self.env_path = env_path or settings_store.ENV_PATH
         self.events: deque[dict[str, Any]] = deque(maxlen=200)
-        self.started_at = datetime.now(IST)
+        self.started_at = datetime.now(timezone.utc).astimezone(IST)
         self._events_lock = threading.Lock()
         self.settings: Settings
         self.scanner: MarketScanner
